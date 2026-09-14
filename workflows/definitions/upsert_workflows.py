@@ -8,14 +8,14 @@ for the full input schema.
 
 Usage:
     # batch
-    python upsert_workflows.py --server https://pro-lemur-fda34e845.trials.acryl.io --dir .
+    python upsert_workflows.py --server https://.trials.acryl.io --dir .
 
     # single file
-    python upsert_workflows.py --server https://pro-lemur-fda34e845.trials.acryl.io \\
+    python upsert_workflows.py --server https://[DATAHUB-SUBDOMAIN].trials.acryl.io \\
         --file action-workflow-propose-new-glossary-term_v2.json
 
     # print the equivalent curl command(s) instead of calling the API
-    python upsert_workflows.py --server https://pro-lemur-fda34e845.trials.acryl.io \\
+    python upsert_workflows.py --server https://[DATAHUB-SUBDOMAIN].trials.acryl.io \\
         --file action-workflow-propose-new-glossary-term_v2.json --print-curl
 
 Generate the token from the target instance's UI: Settings > Access Tokens >
@@ -47,7 +47,7 @@ mutation upsertActionWorkflow($input: UpsertActionWorkflowInput!) {
 """
 
 # Field sets per GraphQL input type, taken from live introspection against
-# fieldeng.acryl.io (GMS v2.1.0-cloud). Older GMS versions (e.g. v1.1.3-cloud
+# [DATAHUB-SUBDOMAIN].acryl.io (GMS v2.1.0-cloud). Older GMS versions (e.g. v1.1.3-cloud
 # on the trial) may lack some of these fields entirely -- used to identify
 # which dict in the payload a "field X not defined for type Y" error refers
 # to, so it can be stripped and the request retried.
@@ -186,7 +186,7 @@ def main() -> int:
     parser.add_argument(
         "--server",
         required=True,
-        help="DataHub frontend URL, e.g. https://pro-lemur-fda34e845.trials.acryl.io",
+        help="DataHub frontend URL, e.g. https://[DATAHUB-SUBDOMAIN].trials.acryl.io",
     )
     parser.add_argument("--token", help="Personal access token (PAT). Prefer --token-env or --token-file.")
     parser.add_argument("--token-file", help="Path to a file containing the PAT.")
