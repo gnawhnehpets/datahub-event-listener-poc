@@ -1,0 +1,205 @@
+# Route completed Action Workflow decisions through a custom action.
+#
+#   .venv/bin/datahub-actions actions run -c action-route-workflow-decisions.yaml
+#
+# Same recipe shape as the config-only files, with one line changed: the action
+# is src/actions/router.py instead of the built-in hello_world.
+#
+# That one line buys the thing configuration cannot do -- it resolves WHICH
+# workflow a decision belongs to. The actionRequestStatus event carries status,
+# result and note but no workflowUrn, so the router fetches the actionRequest
+# and reads it from there, along with the submitted form values and the
+# requester.
+#
+# On ACCEPTED for the domain workflow it CREATES THE DOMAIN -- see
+# src/actions/domain.py. That is a real mutation, so mind the replay note in
+# the quickstart before pointing this at a lookback window.
+#
+# Requires PYTHONPATH=src (already in .env.example) so the module can be
+# imported. See docs/QUICKSTART-ACTION-CONFIG.md.
+
+# A cursor for a given name can stop delivering -- see the README. When that
+# happens the listener receives nothing while looking healthy, and the only
+# reliable repair found so far is a new name. Bump the suffix.
+name: action-route-workflow-decisions-v5
+
+source:
+  type: datahub-cloud
+  config:
+    # MetadataChangeLog_v1 does NOT exist on DataHub Cloud and returns HTTP 500.
+    topics: [MetadataChangeLog_Versioned_v1]
+
+    # RECOVERY. On startup the source re-reads this many days of events, so a
+    # decision made while the listener was down is still acted on when it comes
+    # back. Without it a restart begins at the latest event and that approval
+    # never creates its domain.
+    #
+    # It replays on EVERY restart, not only after an outage -- a restart five
+    # minutes after the last one re-reads the whole window. Both actions are
+    # built for that:
+    #
+    #   create_domain   idempotent. The urn is deterministic, the create is
+    #                   skipped when the entity exists, and both enrich calls
+    #                   are upserts, so a replay converges.
+    #   notify_*        NOT idempotent, so it is made so: each (request,
+    #                   outcome) is recorded once sent and never sent again.
+    #                   See notify.state_dir below.
+    #
+    # An outage longer than this window loses the decisions that fell out of it.
+    # Raise it if the listener may be down for days; the only cost of a larger
+    # window is a slower startup, since replayed work is suppressed either way.
+    lookback_days: 7
+    # With a consumer_id the source tracks an offset, so a restart resumes
+    # rather than skipping. The cursor commits only on SIGINT -- stop this with
+    # Ctrl+C, never a plain `kill`.
+    # consumer_id is omitted because acryl-datahub-actions 1.7.0.7 ignores it:
+    # the offset cursor is keyed on the PIPELINE NAME instead, as
+    # urn:li:dataHubAction:<name>-<topic>. Setting it changes nothing.
+    #
+    # That matters because a cursor can end up past the events you are waiting
+    # for, and the listener then receives NOTHING while looking perfectly
+    # healthy. It happened here to the name this recipe used to carry:
+    #
+    #   old name, whatever the consumer_id                 0 events
+    #   old name + reset_offsets + lookback_days: 1      109 events
+    #   FRESH NAME                                       127 events
+    #
+    # reset_offsets did not durably fix it; renaming the pipeline did, because a
+    # new name is a new cursor. If this listener ever goes quiet while decisions
+    # are being made, suspect the cursor before the code -- and confirm it with
+    # a throwaway pipeline under a different name.
+
+filter:
+  event_type: MetadataChangeLogEvent_v1
+  event:
+    entityType: actionRequest
+    aspectName: actionRequestStatus
+    # UPSERT excludes RESTATE, emitted during a restore-indices run, which
+    # would otherwise re-deliver every historical decision at once.
+    changeType: UPSERT
+
+# Still not filtered on the aspect: that interacts badly with consumer_id (see
+# the quickstart). The router drops non-COMPLETED events itself, in code, where
+# the behaviour is legible and testable.
+
+action:
+  # Import path, not a registered plugin name: PluginRegistry.get() treats any
+  # key containing a dot or colon as an import path.
+  type: "actions.router:WorkflowRouterAction"
+  config:
+    # BOTH a filter and a naming table -- a decision from a workflow not listed
+    # here is ignored. Comment the whole block out to log every workflow, which
+    # is what you want before you know the URNs.
+    #
+    # Discover them with:
+    #   .venv/bin/python workflows/definitions/fetch_action_workflows.py
+    workflows:
+      # Long form: an action per outcome. Unset outcomes default to `log`.
+      "urn:li:actionWorkflow:propose-new-domain":
+        label: Propose New Domain
+        accepted: create_domain
+        rejected: notify_rejection
+        notify:
+          subject: "Domain proposal rejected: {title}"
+          title_field: new_domain_name
+          # The proposal names the people who would own the domain; they are
+          # the ones who have to correct and resubmit, so they are notified
+          # with the requester.
+          owner_fields: [technical_owners, business_owners, data_stewards]
+          field_labels:
+            new_domain_name: "Proposed name"
+            new_domain_description: "Description"
+            data_classification: "Data classification"
+            parent_domain: "Parent domain"
+            l1_gc_domain_code: "Level 1 GC domain code"
+            technical_owners: "Technical owners"
+            business_owners: "Business owners"
+            data_stewards: "Data stewards"
+            data_governance_reviewers: "Data governance reviewers"
+            business_justification: "Business justification"
+      "urn:li:actionWorkflow:7110b19c-45b9-4450-b8bb-ba47d9f522ba": &dataset_access
+        label: Dataset Access Request
+        accepted: notify_approval
+        rejected: notify_rejection
+        notify:
+          # No title_field: this form has no name field, because the dataset the
+          # request was raised against IS the subject. The notifier falls back
+          # to that entity's name.
+          #
+          # No owner_fields: the approvers ARE the dataset owners, so they would
+          # be emailed their own decision. The requester is always notified.
+          owner_fields: []
+          field_labels:
+            business_justification: "Business justification"
+            access_duration: "Access duration"
+            permanent_access_justification: "Permanent access justification"
+          accepted:
+            subject: "Dataset access request approved: {title}"
+            intro: >-
+              <p>Your request for access to <strong>{title}</strong> was
+              <strong>approved</strong>.</p>
+            by_template: "<p>Approved by {by}.</p>"
+            # Deliberately explicit. The listener grants no permission in any
+            # source system and cannot verify that anyone did, so an approval
+            # that merely says "approved" leaves the requester to discover that
+            # by failing to query -- and to file a bug against the wrong system.
+            closing: >-
+              This records the decision in DataHub. It does not itself grant
+              access in the source system -- if you cannot query the dataset
+              yet, contact the data steward who approved the request.
+          rejected:
+            subject: "Dataset access request rejected: {title}"
+            intro: >-
+              <p>Your request for access to <strong>{title}</strong> was
+              <strong>rejected</strong>.</p>
+            by_template: "<p>Rejected by {by}.</p>"
+            closing: >-
+              To proceed, address the reason above and submit a new request from
+              the dataset page.
+
+      # The -2 copy, routed with exactly the same behaviour via a YAML merge key
+      # so the two cannot drift. It exists because action requests CANNOT be
+      # deleted: once COMPLETED they are terminal and there is no delete
+      # mutation, so testing against the real workflow would permanently litter
+      # the history people actually look at.
+      #
+      # Both are listed because a request raised against one is invisible to a
+      # listener configured for the other -- which is exactly how a workflow can
+      # look dead while working perfectly.
+      "urn:li:actionWorkflow:zz-dataset-access-request-2":
+        <<: *dataset_access
+        label: Dataset Access Request (test copy)
+    # server and token default to DATAHUB_GMS_URL / DATAHUB_GMS_TOKEN.
+    # Never put a token here.
+
+    # Used by the notify_rejection action. RESEND_API_KEY comes from the
+    # environment -- never put a secret here. If a workflow routes to
+    # notify_rejection without the key or from_address, the pipeline refuses to
+    # start rather than failing on the first real rejection.
+    # Pipeline-wide notify settings only. Anything shaped by a particular
+    # FORM -- field_labels, title_field, owner_fields, the subject -- belongs in
+    # that workflow's own notify block above, because one shared block cannot
+    # serve two workflows whose forms have nothing in common.
+    #
+    # RESEND_API_KEY comes from the environment; never put a secret here.
+    notify:
+      from_address: "DataHub Governance <onboarding@resend.dev>"
+      # Where deliveries are recorded so a replay cannot re-send them. Must
+      # survive a restart -- an in-process set would defend against nothing,
+      # since a restart is the thing being defended against. Defaults to
+      # ${FAILED_EVENTS_DIR}/notified.
+      state_dir: ${FAILED_EVENTS_DIR}/notified
+      # Must be the *frontend* URL, not the GMS URL. They are the same on
+      # DataHub Cloud, but on a split self-hosted deployment the GMS URL is an
+      # internal address and the emailed link would be dead.
+      request_base_url: ${DATAHUB_GMS_URL}
+
+
+options:
+  retry_count: 3
+  failure_mode: CONTINUE
+  failed_events_dir: ${FAILED_EVENTS_DIR:-/var/lib/actions}/route
+
+datahub:
+  server: ${DATAHUB_GMS_URL}
+  token: ${DATAHUB_GMS_TOKEN}

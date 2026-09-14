@@ -1,0 +1,383 @@
+{
+  "input": {
+    "urn": "urn:li:actionWorkflow:propose-new-domain",
+    "name": "Propose New Domain",
+    "category": "CUSTOM",
+    "customCategory": "GOVERNANCE",
+    "description": "Propose a new business domain at level 1, 2, or 3. Routed sequentially to the Data Steward, the Data Governance team, and the Technical Owner. On final approval the domain is created automatically with a derived GC Domain Code.",
+    "trigger": {
+      "type": "FORM_SUBMITTED",
+      "form": {
+        "entrypoints": [
+          {
+            "type": "HOME",
+            "label": "Propose New Domain"
+          }
+        ],
+        "entityTypes": null,
+        "fields": [
+          {
+            "id": "new_domain_name",
+            "name": "New domain name",
+            "description": "Display name for the proposed domain. Also becomes the final segment of the generated GC Domain Code.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": true,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "new_domain_description",
+            "name": "Description",
+            "description": "Business definition and intended scope for the new domain.",
+            "valueType": "RICH_TEXT",
+            "allowedEntityTypes": null,
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "data_classification",
+            "name": "Data Classification",
+            "description": "Select every classification that applies to data in this domain. Choose all that apply -- a domain often spans several.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "Public"
+              },
+              {
+                "stringValue": "Internal"
+              },
+              {
+                "stringValue": "Confidential"
+              },
+              {
+                "stringValue": "Restricted"
+              },
+              {
+                "stringValue": "PII"
+              },
+              {
+                "stringValue": "PHI"
+              }
+            ],
+            "cardinality": "MULTIPLE",
+            "required": false,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "parent_domain",
+            "name": "Parent domain",
+            "description": "The domain this one nests under. Leave blank to propose a root (Level 1) domain. Pick a Level 1 domain to create a Level 2, or a Level 2 domain to create a Level 3. The full hierarchy is derived from this one choice, so a mismatched pair is not possible.",
+            "valueType": "URN",
+            "allowedEntityTypes": [
+              "DOMAIN"
+            ],
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "level_2_e_commerce",
+            "name": "Level 2 domain under E-Commerce",
+            "description": "Optional. Narrow the parent to a domain directly beneath E-Commerce. Leave blank to propose directly under E-Commerce.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "E-Commerce Testing"
+              }
+            ],
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": {
+              "type": "SINGLE_FIELD_VALUE",
+              "singleFieldValueCondition": {
+                "field": "parent_domain",
+                "values": [
+                  "urn:li:domain:sample_data_d4f24004-fb54-4e3c-8dea-2b7e209230b0"
+                ],
+                "condition": "EQUAL",
+                "negated": false
+              }
+            },
+            "valuesSource": null
+          },
+          {
+            "id": "level_2_line_of_business",
+            "name": "Level 2 domain under Line of Business",
+            "description": "Optional. Narrow the parent to a domain directly beneath Line of Business. Leave blank to propose directly under Line of Business.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "LOB_L2"
+              }
+            ],
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": {
+              "type": "SINGLE_FIELD_VALUE",
+              "singleFieldValueCondition": {
+                "field": "parent_domain",
+                "values": [
+                  "urn:li:domain:LOB"
+                ],
+                "condition": "EQUAL",
+                "negated": false
+              }
+            },
+            "valuesSource": null
+          },
+          {
+            "id": "level_2_poc_parent_domian",
+            "name": "Level 2 domain under POC_Parent Domian",
+            "description": "Optional. Narrow the parent to a domain directly beneath POC_Parent Domian. Leave blank to propose directly under POC_Parent Domian.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "Poc_child"
+              },
+              {
+                "stringValue": "Poc_child1"
+              },
+              {
+                "stringValue": "Poc_child2"
+              }
+            ],
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": {
+              "type": "SINGLE_FIELD_VALUE",
+              "singleFieldValueCondition": {
+                "field": "parent_domain",
+                "values": [
+                  "urn:li:domain:9b9860d7-56f8-4a06-b742-0d3bc7d7c9d4"
+                ],
+                "condition": "EQUAL",
+                "negated": false
+              }
+            },
+            "valuesSource": null
+          },
+          {
+            "id": "level_2_risk_compliance",
+            "name": "Level 2 domain under Risk & Compliance",
+            "description": "Optional. Narrow the parent to a domain directly beneath Risk & Compliance. Leave blank to propose directly under Risk & Compliance.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "Finance"
+              },
+              {
+                "stringValue": "Operations"
+              },
+              {
+                "stringValue": "Testing"
+              }
+            ],
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": {
+              "type": "SINGLE_FIELD_VALUE",
+              "singleFieldValueCondition": {
+                "field": "parent_domain",
+                "values": [
+                  "urn:li:domain:collibra_lob_risk_and_compliance"
+                ],
+                "condition": "EQUAL",
+                "negated": false
+              }
+            },
+            "valuesSource": null
+          },
+          {
+            "id": "l1_gc_domain_code",
+            "name": "Level 1 GC Domain Code",
+            "description": "Risk & Compliance carries three GC Domain Codes. Pick the one that applies. Shown only when the derived Level 1 is Risk & Compliance.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "GC001"
+              },
+              {
+                "stringValue": "GC002"
+              },
+              {
+                "stringValue": "GC003"
+              },
+              {
+                "stringValue": "GC004"
+              }
+            ],
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": {
+              "type": "SINGLE_FIELD_VALUE",
+              "singleFieldValueCondition": {
+                "field": "parent_domain",
+                "values": [
+                  "urn:li:domain:collibra_lob_finance",
+                  "urn:li:domain:collibra_lob_operations",
+                  "urn:li:domain:collibra_lob_risk_and_compliance",
+                  "urn:li:domain:collibra_lob_testing"
+                ],
+                "condition": "EQUAL",
+                "negated": false
+              }
+            },
+            "valuesSource": null
+          },
+          {
+            "id": "data_stewards",
+            "name": "Data steward(s)",
+            "description": "Approves step 1. The people picked here become the step-1 approvers.",
+            "valueType": "URN",
+            "allowedEntityTypes": [
+              "CORP_USER",
+              "CORP_GROUP"
+            ],
+            "allowedValues": null,
+            "cardinality": "MULTIPLE",
+            "required": true,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "data_governance_reviewers",
+            "name": "Data governance reviewer(s)",
+            "description": "Approves step 2. The people or groups picked here become the step-2 approvers. They review the proposal only -- unlike the owner fields, they are not recorded as owners of the new domain.",
+            "valueType": "URN",
+            "allowedEntityTypes": [
+              "CORP_USER",
+              "CORP_GROUP"
+            ],
+            "allowedValues": null,
+            "cardinality": "MULTIPLE",
+            "required": true,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "business_owners",
+            "name": "Business owner(s)",
+            "description": "Users or groups to record with the Business Owner ownership type.",
+            "valueType": "URN",
+            "allowedEntityTypes": [
+              "CORP_USER",
+              "CORP_GROUP"
+            ],
+            "allowedValues": null,
+            "cardinality": "MULTIPLE",
+            "required": false,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "technical_owners",
+            "name": "Technical owner(s)",
+            "description": "Approves step 3, the final gate. The people picked here become the step-3 approvers.",
+            "valueType": "URN",
+            "allowedEntityTypes": [
+              "CORP_USER",
+              "CORP_GROUP"
+            ],
+            "allowedValues": null,
+            "cardinality": "MULTIPLE",
+            "required": true,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "business_justification",
+            "name": "Business justification",
+            "description": "Why this domain is needed, and the expected impact.",
+            "valueType": "RICH_TEXT",
+            "allowedEntityTypes": null,
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": null,
+            "valuesSource": null
+          }
+        ]
+      }
+    },
+    "steps": [
+      {
+        "id": "data-steward-review",
+        "type": "APPROVAL",
+        "description": "Step 1 of 3. Approved by the Data Steward(s) named on the request.",
+        "actors": {
+          "userUrns": [],
+          "groupUrns": [],
+          "roleUrns": [],
+          "dynamicSource": {
+            "resolvers": [
+              {
+                "resolver": "IDENTITY",
+                "source": "field:data_stewards"
+              }
+            ]
+          }
+        },
+        "quorum": {
+          "anyOf": true
+        }
+      },
+      {
+        "id": "data-governance-review",
+        "type": "APPROVAL",
+        "description": "Step 2 of 3. Data Governance validates the taxonomy placement and the GC Domain Code inputs. Reached only after the Data Steward approves.",
+        "actors": {
+          "userUrns": [],
+          "groupUrns": [],
+          "roleUrns": [],
+          "dynamicSource": {
+            "resolvers": [
+              {
+                "resolver": "IDENTITY",
+                "source": "field:data_governance_reviewers"
+              }
+            ]
+          }
+        },
+        "quorum": {
+          "anyOf": true
+        }
+      },
+      {
+        "id": "technical-owner-review",
+        "type": "APPROVAL",
+        "description": "Step 3 of 3. Approved by the Technical Owner(s) named on the request. Approving this completes the request and triggers domain creation.",
+        "actors": {
+          "userUrns": [],
+          "groupUrns": [],
+          "roleUrns": [],
+          "dynamicSource": {
+            "resolvers": [
+              {
+                "resolver": "IDENTITY",
+                "source": "field:technical_owners"
+              }
+            ]
+          }
+        },
+        "quorum": {
+          "anyOf": true
+        }
+      }
+    ]
+  }
+}
