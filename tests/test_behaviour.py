@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import tempfile
 
 import pytest
 import yaml
@@ -45,7 +46,9 @@ def recipe_config() -> dict:
         "DATAHUB_GMS_URL": "https://example.invalid",
         "DATAHUB_GMS_TOKEN": "token",
         "CONSUMER_ID": "test",
-        "FAILED_EVENTS_DIR": os.environ.get("FAILED_EVENTS_DIR", "/tmp"),
+        # gettempdir(), not "/tmp": the literal resolves to C:\tmp on Windows,
+        # so the suite would pass there while exercising the wrong path.
+        "FAILED_EVENTS_DIR": os.environ.get("FAILED_EVENTS_DIR", tempfile.gettempdir()),
     }
     previous = {k: os.environ.get(k) for k in env}
     os.environ.update(env)
@@ -593,6 +596,43 @@ def test_every_labelled_field_the_form_offers_can_appear(_resend):
     # they narrow the parent rather than describing the proposal.
     unlabelled = {i for i in form_ids - labels if not i.startswith("level_2_")}
     assert not unlabelled, f"form fields with no label, silently dropped from email: {unlabelled}"
+
+
+# ------------------------------------------------- state dir is cross-platform
+
+
+def test_default_state_dir_is_the_system_temp_dir():
+    """A hardcoded "/tmp" default silently relocates the send-once store.
+
+    On Windows, pathlib resolves "/tmp" against the current drive root, so the
+    listener does not fail -- it writes its dedup markers to C:\\tmp\\notified
+    instead. That store is what stops lookback_days: 7 re-mailing a week of
+    decisions on every restart, so losing track of it means duplicate
+    notifications rather than a visible error.
+
+    Asserting against tempfile.gettempdir() rather than a literal keeps this
+    honest on every OS.
+    """
+    import importlib
+    import tempfile
+
+    import actions.notify
+
+    # Reimport with the env var absent so the module-level default is exercised,
+    # not whatever FAILED_EVENTS_DIR the suite's fixtures happen to have set.
+    previous = os.environ.pop("FAILED_EVENTS_DIR", None)
+    try:
+        reloaded = importlib.reload(actions.notify)
+        default = reloaded.DEFAULT_STATE_DIR
+    finally:
+        if previous is not None:
+            os.environ["FAILED_EVENTS_DIR"] = previous
+        importlib.reload(actions.notify)
+
+    assert default.parent == pathlib.Path(tempfile.gettempdir()), (
+        f"default state dir is {default}, not under the system temp dir "
+        f"{tempfile.gettempdir()}; a POSIX literal here lands in C:\\tmp on Windows"
+    )
 
 
 # --------------------------------------------------- owners may be groups

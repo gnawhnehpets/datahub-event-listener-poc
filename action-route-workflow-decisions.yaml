@@ -198,7 +198,12 @@ action:
 options:
   retry_count: 3
   failure_mode: CONTINUE
-  failed_events_dir: ${FAILED_EVENTS_DIR:-/var/lib/actions}/route
+  # The fallback is a repo-relative path, not /var/lib/actions. That old default
+  # was unwritable on every OS -- the pipeline died at startup with "Please check
+  # your file system permissions" -- and on Windows a POSIX absolute path does
+  # not error at all, it just resolves to C:\var\lib\actions where nobody looks.
+  # Set FAILED_EVENTS_DIR in .env and this fallback never applies.
+  failed_events_dir: ${FAILED_EVENTS_DIR:-./.state}/route
 
 datahub:
   server: ${DATAHUB_GMS_URL}
