@@ -218,10 +218,14 @@ We have asked Acryl whether a committed offset can be inspected or rewound.
 ### Windows is not a declared platform
 
 The package declares `Operating System :: Unix`, `POSIX :: Linux` and
-`Environment :: MacOS X` — no Windows. In practice it does start on Windows (see
-[Windows](#windows)); there is a single `SIGINT` handler, and Windows wheels exist
-for `confluent-kafka` and `psycopg2-binary`. Treat it as viable but
-vendor-untested, and expect to own any breakage.
+`Environment :: MacOS X` — no Windows. In practice it does start on Windows:
+there is a single `SIGINT` handler, and Windows wheels exist for
+`confluent-kafka` and `psycopg2-binary`. Treat it as viable but vendor-untested,
+and expect to own any breakage.
+
+The commands in [Run](#run) are bash-specific, so a Windows user is blocked
+before reaching any of this. Setup instructions for Git Bash, WSL2 and the VM and
+container fallbacks live on the `dev/windows` branch.
 
 ### Related: the wider question
 
