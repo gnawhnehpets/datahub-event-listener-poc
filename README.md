@@ -161,6 +161,75 @@ the pipeline, but it is noise in the log.
   are gone. Raise it if the listener may be down for days; a larger window only
   costs a slower startup, since replayed work is suppressed either way.
 
+## Known upstream issues
+
+Behaviour in `acryl-datahub-actions==1.7.0.7` that is not ours to fix, recorded
+because each one presents as a bug in this repo. All raised with Acryl.
+
+Version-scoped deliberately: the offset behaviour is server-side, so another
+tenant or release may differ. Re-check before assuming these still hold.
+
+### `consumer_id` is declared but never read
+
+`DataHubEventsSourceConfig` accepts `consumer_id` with the description *"Used to
+store offset for the consumer."* The value is never read. In
+`datahub_actions/plugin/source/acryl/datahub_cloud_event_source.py` the identity
+comes from the pipeline name instead (line ~94):
+
+```python
+self.base_consumer_id = DataHubEventSource._get_pipeline_urn(
+    self.ctx.pipeline_name
+)
+```
+
+Consumers are then keyed `f"{base_consumer_id}-{topic}"`, i.e.
+`urn:li:dataHubAction:<pipeline-name>-<topic>`. A search for
+`source_config.consumer_id` across the package returns nothing.
+
+**Consequence:** setting `consumer_id` does nothing, silently. The only way to
+change the offset identity is to **rename the pipeline**. This repo therefore
+omits the field rather than setting it to something misleading.
+
+### A stuck cursor looks exactly like a healthy listener
+
+Because the cursor is server-side and keyed on the pipeline name, it can advance
+past events you are waiting for. The listener then starts cleanly, prints its
+routing table, reports "now running" — and receives nothing. There is no error.
+
+`reset_offsets: true` is accepted but did not durably fix it here. Measured
+against one pipeline:
+
+| Configuration | Events received |
+|---|---|
+| Old pipeline name, any `consumer_id` | 0 |
+| Old name + `reset_offsets` + `lookback_days: 1` | 109 |
+| **Fresh pipeline name** | **127** |
+
+`reset_offsets` worked for a single run, then a later restart returned to the
+stuck cursor. Renaming the pipeline was the only durable fix — a blunt
+instrument, since a new name discards all offset state.
+
+**If this listener ever goes quiet while decisions are being made, suspect the
+cursor before the code.** Confirm by running a throwaway pipeline under a
+different name; if that receives events, the cursor was the problem.
+
+We have asked Acryl whether a committed offset can be inspected or rewound.
+
+### Windows is not a declared platform
+
+The package declares `Operating System :: Unix`, `POSIX :: Linux` and
+`Environment :: MacOS X` — no Windows. In practice it does start on Windows (see
+[Windows](#windows)); there is a single `SIGINT` handler, and Windows wheels exist
+for `confluent-kafka` and `psycopg2-binary`. Treat it as viable but
+vendor-untested, and expect to own any breakage.
+
+### Related: the wider question
+
+These are all consequences of self-hosting a consumer. We have asked Acryl what
+deployment topology they intend for custom Actions — whether they can run inside
+DataHub Cloud, or ride the Remote Executor that `ExecutorAction` already uses for
+ingestion. A hosted answer would retire this whole section.
+
 ## Validate
 
 ```bash
