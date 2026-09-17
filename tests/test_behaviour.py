@@ -931,3 +931,51 @@ def _capture(sink):
         yield
     finally:
         notify.requests.post = original
+
+
+# --------------------------------------------- workflow name resolution
+
+
+def test_list_action_workflows_returns_urn_and_name(monkeypatch):
+    """The router needs two fields to bind its config; nothing more.
+
+    fetch_action_workflows.py exists for full definitions and gets there by
+    recursively introspecting the schema. That is the wrong amount of machinery
+    for a name lookup, so this is a separate, narrow query.
+    """
+    from actions.client import DataHubClient
+
+    client = DataHubClient(server="https://example.invalid", token="token")
+    monkeypatch.setattr(
+        client,
+        "execute",
+        lambda query, variables: {
+            "listActionWorkflows": {
+                "workflows": [
+                    {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
+                    {"urn": "urn:li:actionWorkflow:b", "name": "Beta"},
+                ]
+            }
+        },
+    )
+
+    assert client.list_action_workflows() == [
+        {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
+        {"urn": "urn:li:actionWorkflow:b", "name": "Beta"},
+    ]
+
+
+def test_list_action_workflows_tolerates_an_instance_with_none(monkeypatch):
+    """An empty list is a valid answer, not an error.
+
+    A fresh deployment has no workflows yet. Returning [] lets the resolver
+    produce a useful "available: none" message instead of a KeyError.
+    """
+    from actions.client import DataHubClient
+
+    client = DataHubClient(server="https://example.invalid", token="token")
+    monkeypatch.setattr(
+        client, "execute", lambda query, variables: {"listActionWorkflows": {"workflows": None}}
+    )
+
+    assert client.list_action_workflows() == []

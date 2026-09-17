@@ -141,6 +141,17 @@ query childDomains($filters: [FacetFilterInput!]) {
 }
 """
 
+_ACTION_WORKFLOWS_QUERY = """
+query listActionWorkflows {
+  listActionWorkflows(input: {start: 0, count: 1000}) {
+    workflows {
+      urn
+      name
+    }
+  }
+}
+"""
+
 _PRINCIPALS_QUERY = """
 query principals($urns: [String!]!) {
   entities(urns: $urns) {
@@ -374,4 +385,23 @@ class DataHubClient:
             {"filters": [{"field": "parentDomain", "values": [parent_urn], "condition": "EQUAL"}]},
         )["searchAcrossEntities"]
         return [hit["entity"] for hit in (result.get("searchResults") or []) if hit.get("entity")]
+
+    def list_action_workflows(self) -> list[dict]:
+        """Every Action Workflow on the instance as ``{urn, name}``.
+
+        Two fields only: this exists so the router can bind config keys to live
+        URNs, not to reproduce a definition. ``fetch_action_workflows.py`` is the
+        tool for that, and it gets there by recursively introspecting the schema.
+
+        Reads workflow entities directly rather than through the domain search
+        index, so unlike ``get_child_domains`` this does not lag a recent write.
+
+        ``count: 1000`` matches the convention in ``_CHILD_DOMAINS_QUERY``. A
+        short read cannot invert the caller's decision the way a short *domain*
+        fetch can -- a missing name fails loudly instead of being read as a
+        deletion -- so this needs no ``IncompleteFetch`` equivalent.
+        """
+        result = self.execute(_ACTION_WORKFLOWS_QUERY, {}) or {}
+        listing = result.get("listActionWorkflows") or {}
+        return [w for w in (listing.get("workflows") or []) if w.get("urn")]
 
