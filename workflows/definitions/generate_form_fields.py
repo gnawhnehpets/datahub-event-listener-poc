@@ -201,6 +201,22 @@ def parent_field_values(nodes: dict[str, DomainNode]) -> tuple[list[str], list[s
     return sorted(set(names)), warnings
 
 
+def build_parent_field(existing: dict, names: list[str]) -> dict:
+    """Patch only the generated parts, preserving hand-written wording.
+
+    The type change is the point: a URN picker cannot be narrowed on this
+    instance, so the field becomes a STRING dropdown over root names.
+    ``allowedEntityTypes`` is cleared because it is meaningless once the field
+    no longer holds a URN, and leaving it set invites the reader to think the
+    picker is still entity-backed.
+    """
+    field = json.loads(json.dumps(existing))
+    field["valueType"] = "STRING"
+    field["allowedEntityTypes"] = None
+    field["allowedValues"] = [{"stringValue": n} for n in names]
+    return field
+
+
 def code_field_values(nodes: dict[str, DomainNode]) -> tuple[list[str], list[str]]:
     """Return (allowedValues, condition URNs) for the GC code field.
 

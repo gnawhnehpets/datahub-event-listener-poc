@@ -47,3 +47,27 @@ def test_parent_field_values_warns_when_two_roots_share_a_name():
     assert names == ["Finance"]
     assert len(warnings) == 1
     assert "Finance" in warnings[0]
+
+
+def test_build_parent_field_converts_urn_picker_to_string_dropdown():
+    existing = {
+        "id": "parent_domain",
+        "name": "Parent domain",
+        "description": "hand-written wording that must survive",
+        "valueType": "URN",
+        "allowedEntityTypes": ["DOMAIN"],
+        "allowedValues": None,
+        "cardinality": "SINGLE",
+        "required": False,
+        "condition": None,
+        "valuesSource": None,
+    }
+    field = g.build_parent_field(existing, ["Alpha", "Beta"])
+
+    assert field["valueType"] == "STRING"
+    assert field["allowedEntityTypes"] is None
+    assert field["allowedValues"] == [{"stringValue": "Alpha"}, {"stringValue": "Beta"}]
+    # hand-written wording and the optionality are not the generator's business
+    assert field["description"] == "hand-written wording that must survive"
+    assert field["required"] is False
+    assert existing["valueType"] == "URN", "must not mutate the input"
