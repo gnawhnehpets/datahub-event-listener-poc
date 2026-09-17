@@ -29,6 +29,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RECIPE = ROOT / "action-route-workflow-decisions.yaml"
 
 DOMAIN_WF = "urn:li:actionWorkflow:propose-new-domain"
+# TARGET URN for the YAML's name-keyed "Dataset Access Request" entry.
+# The _WorkflowListing stub in build() maps that name to this URN so the suite
+# can resolve it offline. Delete this constant and every routing test that
+# exercises the access-request path passes vacuously — the workflow becomes
+# unlisted and its decisions are silently ignored rather than routed.
 ACCESS_WF = "urn:li:actionWorkflow:7110b19c-45b9-4450-b8bb-ba47d9f522ba"
 
 REQUESTER = "urn:li:corpuser:requester@x.com"
@@ -1149,3 +1154,21 @@ def test_create_binds_a_name_keyed_config_to_urns(monkeypatch):
         {"workflows": {"Propose New Domain": "just a label"}}, ctx=None
     )
     assert list(action.workflows) == [DOMAIN_WF]
+
+
+def test_the_shipped_recipe_binds_its_name_keyed_entry_to_a_urn():
+    """The YAML ships one name-keyed entry; act() looks specs up by urn.
+
+    Routing tests reach this path indirectly, so a typo in the YAML key would
+    surface as an opaque construction failure rather than naming the problem.
+    This asserts the binding the shipped config actually depends on.
+    """
+    action, _ = build(request_for(ACCESS_WF, "ACCEPTED", ACCESS_FIELDS, entity=None))
+
+    assert ACCESS_WF in action.workflows, (
+        f"the shipped recipe's name-keyed entry did not resolve to {ACCESS_WF}; "
+        f"got keys {sorted(action.workflows)}"
+    )
+    assert not any(k.startswith("Dataset") for k in action.workflows), (
+        "a name survived into the routing table, so act() would never match it"
+    )

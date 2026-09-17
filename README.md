@@ -78,13 +78,14 @@ for name in ("collibra.gcDomainCode", "collibra.lobLevel"):
     d = (c.execute(q, {"urn": f"urn:li:structuredProperty:{name}"})["entity"] or {}).get("definition")
     print(f"property     : {name} -> {d['cardinality'] if d else 'MISSING'}")
 
-wf = {w["urn"] for w in c.execute(
-    "query{ listActionWorkflows(input:{start:0,count:100}){ workflows { urn } } }", {}
-)["listActionWorkflows"]["workflows"]}
+live = c.execute(
+    "query{ listActionWorkflows(input:{start:0,count:100}){ workflows { urn name } } }", {}
+)["listActionWorkflows"]["workflows"]
+known = {w["urn"] for w in live} | {w["name"] for w in live if w.get("name")}
 import yaml
 from expandvars import expandvars
-for urn in yaml.safe_load(expandvars(open("action-route-workflow-decisions.yaml").read()))["action"]["config"]["workflows"]:
-    print(f"workflow     : {'found' if urn in wf else 'MISSING'} {urn}")
+for key in yaml.safe_load(expandvars(open("action-route-workflow-decisions.yaml").read()))["action"]["config"]["workflows"]:
+    print(f"workflow     : {'found' if key in known else 'MISSING'} {key}")
 
 key = os.environ.get("RESEND_API_KEY", "")
 print("resend key   :", "set" if key else "NOT SET (fine if every outcome routes to log)")
