@@ -108,9 +108,22 @@ action:
   config:
     # BOTH a filter and a naming table -- a decision from a workflow not listed
     # here is ignored. Comment the whole block out to log every workflow, which
-    # is what you want before you know the URNs.
+    # is what you want before you know what exists.
     #
-    # Discover them with:
+    # Keys may be a workflow URN or a workflow NAME. Names are resolved to URNs
+    # at startup and are the portable choice: a URN created through the DataHub
+    # UI is a per-instance GUID, so a URN-keyed entry does not survive being
+    # pointed at another deployment. URNs this repo deploys itself are slugs we
+    # choose, so those stay URN-keyed below.
+    #
+    # Every key is checked at startup, name or URN. An unknown or ambiguous key
+    # stops the listener rather than being ignored -- being ignored is silent,
+    # and that is the failure worth refusing.
+    #
+    # Two live workflows currently share a name, so name-keying is not available
+    # for every entry; use the URN for those.
+    #
+    # Discover both with:
     #   .venv/bin/python workflows/definitions/fetch_action_workflows.py
     workflows:
       # Long form: an action per outcome. Unset outcomes default to `log`.
@@ -136,7 +149,7 @@ action:
             data_stewards: "Data stewards"
             data_governance_reviewers: "Data governance reviewers"
             business_justification: "Business justification"
-      "urn:li:actionWorkflow:7110b19c-45b9-4450-b8bb-ba47d9f522ba": &dataset_access
+      "Dataset Access Request": &dataset_access
         label: Dataset Access Request
         accepted: notify_approval
         rejected: notify_rejection

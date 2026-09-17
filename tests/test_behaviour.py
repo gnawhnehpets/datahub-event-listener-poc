@@ -157,11 +157,21 @@ def _resend(monkeypatch):
 def build(request: dict, exists: bool = False) -> tuple[WorkflowRouterAction, FakeClient]:
     config = recipe_config()
     client = FakeClient(request, exists)
+    globals_ = WorkflowRouterAction.create.__func__.__globals__
+    # The shipped recipe keys one entry by NAME, so the helper has to resolve the
+    # same way create() does -- act() looks specs up by urn. Without this every
+    # routing test would silently treat that workflow as unlisted.
+    workflows = globals_["_resolve_workflow_keys"](
+        _WorkflowListing([
+            (DOMAIN_WF, "Propose New Domain"),
+            (ACCESS_WF, "Dataset Access Request"),
+            ("urn:li:actionWorkflow:zz-dataset-access-request-2", "Dataset Access Request-2"),
+        ]),
+        globals_["_normalize"](config["workflows"]),
+    )
     action = WorkflowRouterAction(
         client=client,
-        workflows=WorkflowRouterAction.create.__func__.__globals__["_normalize"](
-            config["workflows"]
-        ),
+        workflows=workflows,
         notify=config.get("notify") or {},
         ctx=None,
     )

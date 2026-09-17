@@ -161,6 +161,36 @@ the pipeline, but it is noise in the log.
   are gone. Raise it if the listener may be down for days; a larger window only
   costs a slower startup, since replayed work is suppressed either way.
 
+## Pointing at another deployment
+
+`generate_form_fields.py --write` regenerates every instance-specific reference
+inside the form definition — the `level_2_*` conditions and options, the
+`l1_gc_domain_code` values, and the field ids derived from domain names.
+
+The routing table needs one manual decision. Keys in
+`action-route-workflow-decisions.yaml` may be a workflow **URN** or a workflow
+**name**:
+
+- A workflow this repo deploys has a URN *you* chose (`propose-new-domain`), so
+  it is portable. Keep it URN-keyed.
+- A workflow created through the DataHub UI has a per-instance GUID. Key it by
+  **name** so it resolves on any deployment.
+
+Every key is validated at startup. An unknown or ambiguous key stops the
+listener with the available names listed — deliberately, because an unmatched key
+otherwise means decisions from that workflow are silently ignored.
+
+Name-keying is not universally available: two workflows sharing a name cannot be
+addressed by it, and the error says so. Use the URN for those.
+
+Still manual on a new deployment, and not covered by the generator:
+
+- The two structured properties `collibra.gcDomainCode` and `collibra.lobLevel`
+  must exist, or the domain create succeeds and the enrichment fails after all
+  three approvals.
+- `QUERY_COUNT = 1000` in the generator caps the domain fetch; past that it
+  raises `IncompleteFetch` rather than proposing mass removals.
+
 ## Known upstream issues
 
 Behaviour in `acryl-datahub-actions==1.7.0.7` that is not ours to fix, recorded
