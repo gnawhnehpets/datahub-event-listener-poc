@@ -375,3 +375,74 @@ def _normalize(raw: dict) -> dict:
                 )
         out[key] = entry
     return out
+
+
+_WORKFLOW_URN_PREFIX = "urn:li:actionWorkflow:"
+
+
+def _resolve_workflow_keys(client: DataHubClient, workflows: dict) -> dict:
+    """Bind every configured key to a live Action Workflow URN.
+
+    A key already shaped like a URN is validated and kept as-is; anything else is
+    a workflow NAME and is resolved. Both directions fail fast, because the
+    ``workflows`` table is also a FILTER -- a key matching nothing means
+    decisions from that workflow are silently ignored, with no error anywhere.
+    That silence is the whole reason this function exists, so it must not be
+    reintroduced as a warning.
+
+    URN keys are validated too, not just names. Resolving only names would leave
+    the hole open for any config carried from another deployment.
+
+    An empty table means "log every workflow", so it short-circuits rather than
+    spending a call to bind nothing.
+    """
+    if not workflows:
+        return workflows
+
+    live = client.list_action_workflows()
+    urns = {w["urn"] for w in live}
+
+    by_name: dict[str, list[str]] = {}
+    for workflow in live:
+        name = (workflow.get("name") or "").strip()
+        if name:
+            by_name.setdefault(name, []).append(workflow["urn"])
+
+    resolved: dict[str, dict] = {}
+    for key, spec in workflows.items():
+        if key.startswith(_WORKFLOW_URN_PREFIX):
+            if key not in urns:
+                raise ValueError(
+                    f"{key} is not an Action Workflow on this instance. If this "
+                    f"config came from another deployment, key the entry by name "
+                    f"instead."
+                )
+            target = key
+        else:
+            matches = by_name.get(key) or []
+            if not matches:
+                available = ", ".join(sorted(by_name)) or "none"
+                raise ValueError(
+                    f"{key!r} is not an Action Workflow on this instance "
+                    f"(available: {available}). Check the name in "
+                    f"action-route-workflow-decisions.yaml, or use the URN directly."
+                )
+            if len(matches) > 1:
+                raise ValueError(
+                    f"{len(matches)} Action Workflows are named {key!r} "
+                    f"({', '.join(sorted(matches))}). Use the URN directly for "
+                    f"this entry."
+                )
+            target = matches[0]
+            logger.info("Resolved workflow %r -> %s", key, target)
+
+        if target in resolved:
+            # Two keys naming one workflow: dict assignment would drop one spec
+            # and the operator would never know which routing won.
+            raise ValueError(
+                f"{target} is configured twice, once by URN and once by name. "
+                f"Keep one entry."
+            )
+        resolved[target] = spec
+
+    return resolved

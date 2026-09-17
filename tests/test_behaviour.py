@@ -1007,3 +1007,89 @@ def test_list_action_workflows_drops_entries_with_no_urn(monkeypatch):
     assert client.list_action_workflows() == [
         {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
     ]
+
+
+class _WorkflowListing:
+    """Minimal stand-in exposing only what the resolver calls.
+
+    Deliberately not FakeClient: that models the listener's runtime reads, and
+    resolution happens at startup before any event exists.
+    """
+
+    def __init__(self, pairs: list[tuple[str, str]]):
+        self._pairs = pairs
+
+    def list_action_workflows(self) -> list[dict]:
+        return [{"urn": urn, "name": name} for urn, name in self._pairs]
+
+
+def _resolver():
+    return WorkflowRouterAction.create.__func__.__globals__["_resolve_workflow_keys"]
+
+
+def test_a_name_key_resolves_to_the_live_urn():
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    resolved = _resolver()(listing, {"Propose New Domain": {"label": "x"}})
+    assert list(resolved) == [DOMAIN_WF]
+    assert resolved[DOMAIN_WF] == {"label": "x"}
+
+
+def test_an_existing_urn_key_is_left_exactly_as_it_was():
+    """The backward-compatibility guarantee: existing configs keep their keys."""
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    spec = {"label": "x"}
+    resolved = _resolver()(listing, {DOMAIN_WF: spec})
+    assert resolved == {DOMAIN_WF: spec}
+
+
+def test_a_urn_that_does_not_exist_here_is_rejected():
+    """Without this, a config carried to another deployment still fails silently.
+
+    The workflows table is also a filter, so an unmatched key means decisions
+    from that workflow do nothing -- no error, no log line. Resolving only names
+    would leave that hole open for URN-keyed entries.
+    """
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    with pytest.raises(ValueError, match="not an Action Workflow on this instance"):
+        _resolver()(listing, {"urn:li:actionWorkflow:from-another-deployment": {"label": "x"}})
+
+
+def test_an_unknown_name_lists_what_is_available():
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    with pytest.raises(ValueError, match="Propose New Domain"):
+        _resolver()(listing, {"Propose New Domian": {"label": "x"}})
+
+
+def test_a_duplicated_name_is_ambiguous_and_refused():
+    """Not hypothetical: two names are already duplicated on the live instance.
+
+    'Dynamic Domain Selection POC' and 'Data Product Access Request' each appear
+    twice, so name-keying is a per-entry option rather than a blanket
+    replacement. The error has to point at the URN form.
+    """
+    listing = _WorkflowListing([
+        ("urn:li:actionWorkflow:one", "Dataset Access Request"),
+        ("urn:li:actionWorkflow:two", "Dataset Access Request"),
+    ])
+    with pytest.raises(ValueError, match="2 Action Workflows are named"):
+        _resolver()(listing, {"Dataset Access Request": {"label": "x"}})
+
+
+def test_naming_the_same_workflow_twice_is_refused():
+    """A name and its own URN both present would silently drop one entry."""
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    with pytest.raises(ValueError, match="twice"):
+        _resolver()(listing, {
+            DOMAIN_WF: {"label": "by urn"},
+            "Propose New Domain": {"label": "by name"},
+        })
+
+
+def test_an_empty_table_short_circuits_without_a_lookup():
+    """No workflows means log everything, so there is nothing to bind."""
+
+    class Exploding:
+        def list_action_workflows(self):
+            raise AssertionError("must not call the API for an empty table")
+
+    assert _resolver()(Exploding(), {}) == {}
