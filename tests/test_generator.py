@@ -25,6 +25,7 @@ import generate_form_fields as g  # noqa: E402
 def _minimal_definition(
     parent_domain_values: list[str] | None = None,
     extra_level2: list[dict] | None = None,
+    pre_level2: list[dict] | None = None,
 ) -> dict:
     """Build the smallest JSON document main() will not crash on.
 
@@ -33,6 +34,12 @@ def _minimal_definition(
       - an ``l1_gc_domain_code`` field (index-resolved separately)
       - zero or more ``level_2_*`` fields (managed by apply_level_2_fields)
     Every other field in the real definition is irrelevant to the generator.
+
+    ``pre_level2`` inserts ``level_2_*`` fields BEFORE ``parent_domain``.
+    This is the realistic shape when apply_level_2_fields has previously
+    re-inserted stale generated fields at the top of the list.  It is used by
+    ``test_write_patches_parent_domain_in_place`` to make parent_index go stale
+    if it is resolved after apply_level_2_fields removes the pre fields.
     """
     parent_field: dict = {
         "id": "parent_domain",
@@ -62,7 +69,7 @@ def _minimal_definition(
         "condition": None,
         "valuesSource": None,
     }
-    fields: list[dict] = [parent_field, *(extra_level2 or []), code_field]
+    fields: list[dict] = [*(pre_level2 or []), parent_field, *(extra_level2 or []), code_field]
     return {
         "input": {
             "trigger": {
@@ -186,23 +193,76 @@ def test_parent_options_are_deterministic():
 # --write path tests: exercise main() offline
 # ---------------------------------------------------------------------------
 
-def _fixture_nodes_two_roots() -> dict:
-    """Alpha and Beta as root domains, no children, no GC codes."""
+def _fixture_nodes_index_shift() -> dict:
+    """Alpha (root with one child) and Beta (childless root), no GC codes.
+
+    AlphaChild is a direct child of Alpha.  ``level_2_fields()`` therefore
+    generates ``level_2_alpha`` (options: ["AlphaChild"]).  When
+    ``apply_level_2_fields`` runs it removes the committed ``level_2_alpha`` that
+    sits *before* ``parent_domain`` in the definition (correct content, wrong
+    position), shifting ``parent_domain`` from index 1 → 0, then inserts the
+    fresh ``level_2_alpha`` after it.
+
+    If ``parent_index`` were resolved *after* that mutation it would point at
+    ``level_2_alpha`` (the new index 1), not ``parent_domain`` (index 0), and
+    the wrong field would receive the dropdown.
+    """
     return tree(
         node("urn:li:domain:a", "Alpha"),
+        node("urn:li:domain:alpha_child", "AlphaChild",
+             ancestors=["urn:li:domain:a"]),
         node("urn:li:domain:b", "Beta"),
     )
 
 
 def test_write_patches_parent_domain_in_place(monkeypatch, tmp_path):
-    """A successful --write rewrites parent_domain and only parent_domain.
+    """A successful --write patches parent_domain and not any other field.
 
-    This test pins the index-ordering invariant: parent_index is resolved
-    BEFORE apply_level_2_fields mutates the list.  If the index were stale,
-    some other field would carry the dropdown and this assertion would catch it.
+    This test pins the index-ordering invariant: parent_index must be resolved
+    BEFORE apply_level_2_fields mutates the list.
+
+    Fixture field order (before the write):
+        [level_2_alpha (stale), parent_domain, l1_gc_domain_code]
+    apply_level_2_fields removes level_2_alpha (the stale field that precedes
+    parent_domain), then re-inserts the freshly generated level_2_alpha after
+    parent_domain.  Removal shifts parent_domain from index 1 → 0.
+    Final order: [parent_domain, level_2_alpha (fresh), l1_gc_domain_code].
+
+    A parent_index resolved AFTER that removal would be 1 (off by one) and
+    would point at level_2_alpha instead of parent_domain.  The assertions below
+    catch that: parent_domain must gain the dropdown, and no other field may.
     """
-    nodes = _fixture_nodes_two_roots()
-    definition = _minimal_definition()
+    nodes = _fixture_nodes_index_shift()
+
+    # A level_2_alpha field sits BEFORE parent_domain.  Its id matches what
+    # level_2_fields() generates for the "Alpha" parent and its allowedValues
+    # match the live tree, so the removal guard does not fire.  The field is
+    # "stale" only in the positional sense: it appears before parent_domain
+    # rather than after it, which is the invalid state apply_level_2_fields is
+    # designed to correct.  The replacement removes this field from index 0,
+    # shifting parent_domain from index 1 → 0, then inserts the fresh
+    # level_2_alpha immediately after parent_domain.
+    stale_level2: dict = {
+        "id": "level_2_alpha",
+        "name": "Level 2 domain under Alpha",
+        "description": "Optional. Narrow to a domain beneath Alpha.",
+        "valueType": "STRING",
+        "allowedEntityTypes": None,
+        "allowedValues": [{"stringValue": "AlphaChild"}],
+        "cardinality": "SINGLE",
+        "required": False,
+        "condition": {
+            "type": "SINGLE_FIELD_VALUE",
+            "singleFieldValueCondition": {
+                "field": "parent_domain",
+                "values": ["Alpha"],
+                "condition": "EQUAL",
+                "negated": False,
+            },
+        },
+        "valuesSource": None,
+    }
+    definition = _minimal_definition(pre_level2=[stale_level2])
     def_path = tmp_path / "def.json"
     def_path.write_text(json.dumps(definition, indent=2) + "\n")
 
@@ -218,7 +278,7 @@ def test_write_patches_parent_domain_in_place(monkeypatch, tmp_path):
     written = json.loads(def_path.read_text())
     fields = written["input"]["trigger"]["form"]["fields"]
 
-    # The parent_domain field must be patched to a STRING dropdown.
+    # parent_domain must be patched to a STRING dropdown listing all roots.
     parent = next(f for f in fields if f["id"] == "parent_domain")
     assert parent["valueType"] == "STRING"
     assert parent["allowedEntityTypes"] is None
@@ -227,9 +287,9 @@ def test_write_patches_parent_domain_in_place(monkeypatch, tmp_path):
         {"stringValue": "Beta"},
     ]
 
-    # No OTHER field must have gained those allowedValues -- if parent_index
-    # was stale (resolved after apply_level_2_fields), the wrong field would
-    # carry the dropdown.
+    # No OTHER field must have gained those allowedValues.  If parent_index was
+    # stale (resolved after apply_level_2_fields shifted the list), the dropdown
+    # would land on level_2_alpha (index 1) instead of parent_domain (index 0).
     expected_allowed = [{"stringValue": "Alpha"}, {"stringValue": "Beta"}]
     for f in fields:
         if f["id"] == "parent_domain":
