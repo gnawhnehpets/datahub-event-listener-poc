@@ -673,53 +673,65 @@ def test_parent_domain_carries_no_filter_condition():
     )
 
 
-def test_parent_domain_description_admits_the_list_is_unfiltered():
-    """The description is the only thing steering requesters, so it must be true.
+def test_parent_domain_is_a_curated_string_dropdown():
+    """The field must be STRING with options, or nothing constrains the picker.
 
-    Since filterCondition cannot restrict this picker (see the test above), the
-    wording carries the whole burden. Two ways to get it wrong, and this repo has
-    now made both:
-
-      * The original said "or a Level 2 domain to create a Level 3", which
-        bypasses the level_2_* dropdowns the generator maintains.
-      * A later revision claimed "Only Level 1 domains are listed" -- written
-        while the filter was expected to work. It shipped to the live form after
-        the filter was reverted, so the form actively lied: every depth is still
-        listed.
-
-    A description that promises filtering nobody implements is worse than one
-    that admits the gap, because a requester who trusts it has no reason to look
-    at what they picked. So this asserts the wording tells the truth: it must not
-    claim the list is restricted, and it must warn that a wrong pick is caught
-    only after every approval has completed.
+    A URN-typed parent_domain is an unconstrained entity picker: it offers every
+    domain at every depth, and a Level 3 choice is rejected only after all three
+    approvals. allowedValues is rejected on URN fields, so STRING is the only
+    shape that can carry a curated list.
     """
     definition = json.loads(
         (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
     )
-    parent = next(
-        f
-        for f in definition["input"]["trigger"]["form"]["fields"]
-        if f["id"] == "parent_domain"
+    fields = definition["input"]["trigger"]["form"]["fields"]
+    parent = next(f for f in fields if f["id"] == "parent_domain")
+
+    assert parent["valueType"] == "STRING", (
+        f"parent_domain is {parent['valueType']!r}; a URN picker cannot be "
+        "constrained to Level 1 on this instance"
+    )
+    assert parent["allowedEntityTypes"] is None, parent["allowedEntityTypes"]
+    options = [v["stringValue"] for v in parent.get("allowedValues") or []]
+    assert options, "parent_domain has no options, so the dropdown would be empty"
+    assert not any(o.startswith("urn:") for o in options), (
+        f"options must be display names, not urns: {options[:3]}"
     )
 
-    description = parent["description"].lower()
 
-    assert "level 2 domain to create a level 3" not in description, (
-        "description tells the requester to pick a Level 2 directly, which bypasses "
-        "the level_2_* dropdowns that generate_form_fields.py keeps in sync"
+def test_every_parent_keyed_condition_compares_names_not_urns():
+    """A urn here never matches a name, so the field silently never renders.
+
+    The server accepts this mismatch, and the form then looks merely incomplete
+    rather than broken -- no error anywhere. Five fields gate on parent_domain.
+    """
+    definition = json.loads(
+        (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
     )
-    assert "only level 1 domains are listed" not in description, (
-        "description claims the picker is filtered to Level 1. It is not -- "
-        "filterCondition cannot express that, so this promise is false"
-    )
-    assert "not filtered" in description, (
-        "description must state that the list is unfiltered, since nothing in the "
-        "form prevents selecting a Level 2 or Level 3"
-    )
-    assert "after all three approvals" in description, (
-        "description must warn that a wrong parent is only rejected after every "
-        "approval gate, which is what makes the mistake expensive"
-    )
+    fields = definition["input"]["trigger"]["form"]["fields"]
+    parent_options = {
+        v["stringValue"]
+        for v in next(f for f in fields if f["id"] == "parent_domain").get("allowedValues") or []
+    }
+
+    gated = [
+        f for f in fields
+        if ((f.get("condition") or {}).get("singleFieldValueCondition") or {}).get("field")
+        == "parent_domain"
+    ]
+    assert gated, "expected level_2_* and l1_gc_domain_code to gate on parent_domain"
+
+    for field in gated:
+        values = field["condition"]["singleFieldValueCondition"]["values"]
+        assert not any(v.startswith("urn:") for v in values), (
+            f"{field['id']} compares parent_domain against urns {values}; "
+            "parent_domain holds a name, so this can never match"
+        )
+        unknown = set(values) - parent_options
+        assert not unknown, (
+            f"{field['id']} gates on {sorted(unknown)}, which is not an option in "
+            "parent_domain, so the field can never render"
+        )
 
 
 # ------------------------------------------------- state dir is cross-platform
