@@ -162,6 +162,45 @@ def selectable_parents(nodes: dict[str, DomainNode]) -> list[DomainNode]:
     return [n for n in nodes.values() if len(n.ancestors) + 2 <= MAX_DEPTH]
 
 
+PARENT_FIELD = "parent_domain"
+
+
+def root_domains(nodes: dict[str, DomainNode]) -> list[DomainNode]:
+    """Domains offerable as ``parent_domain``: roots that can still take a child.
+
+    Only roots, because the Level 2 and Level 3 tiers are reached through the
+    ``level_2_*`` dropdowns instead. Offering a deeper domain here produced a
+    proposal the listener rejected for depth -- after all three approvals -- or,
+    worse, one that succeeded while bypassing the narrowing dropdowns entirely.
+    """
+    return sorted(
+        (n for n in nodes.values() if not n.ancestors and _can_take_a_child(n)),
+        key=lambda n: n.name,
+    )
+
+
+def parent_field_values(nodes: dict[str, DomainNode]) -> tuple[list[str], list[str]]:
+    """Return (allowedValues names, warnings) for ``parent_domain``.
+
+    Names rather than URNs because ``allowedValues`` is rejected outright on a
+    URN-typed field: "the picker is not value-scoped". A STRING dropdown is the
+    only shape this instance accepts, which is why ``level_2_*`` already works
+    this way.
+
+    Root names must be globally unique for the submitted value to identify one
+    domain -- a stricter requirement than the sibling-scoped uniqueness the
+    Level 2 dropdowns need, because this field is scoped to nothing.
+    """
+    roots = root_domains(nodes)
+    names = [n.name for n in roots]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    warnings = [
+        f"root domains share the name {d!r}; the submitted value would be ambiguous"
+        for d in dupes
+    ]
+    return sorted(set(names)), warnings
+
+
 def code_field_values(nodes: dict[str, DomainNode]) -> tuple[list[str], list[str]]:
     """Return (allowedValues, condition URNs) for the GC code field.
 
