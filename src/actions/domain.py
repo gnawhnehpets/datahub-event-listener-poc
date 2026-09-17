@@ -72,7 +72,7 @@ def create_domain(client: DataHubClient, fields: FormFields, source_urn: str) ->
     name = fields.require("new_domain_name")
     description = fields.one("new_domain_description")
 
-    parent = _load_parent(client, fields.one("parent_domain"), "Parent")
+    parent = _load_parent(client, _resolve_root(client, fields.one("parent_domain")), "Parent")
     parent = _narrow_to_level_2(client, fields, parent)
     level = level_for(parent)
 
@@ -195,6 +195,38 @@ def _narrow_to_level_2(
             f"selection is ambiguous. Rename one of them."
         )
     return _load_parent(client, matches[0].urn, "Level 2")
+
+
+def _resolve_root(client: DataHubClient, value: str | None) -> str | None:
+    """Map a submitted ``parent_domain`` name to a root domain URN.
+
+    The field is a generated STRING dropdown of root names, because a URN picker
+    cannot be constrained to Level 1 on this instance. Resolution is scoped to
+    roots so a deeper domain sharing a name cannot be chosen by accident.
+
+    Blank means "propose a new Level 1", which is a valid request, so it maps to
+    None rather than raising.
+    """
+    if not value or not value.strip():
+        return None
+    wanted = value.strip()
+
+    roots = [domain_node_from_entity(e) for e in client.get_root_domains()]
+    matches = [r for r in roots if r.name == wanted]
+
+    if not matches:
+        available = ", ".join(sorted(r.name for r in roots)) or "none"
+        raise HierarchyError(
+            f"{wanted!r} is not a root (Level 1) domain (available: {available}). "
+            f"The parent dropdown is generated from the domain tree and may be "
+            f"stale; re-run generate_form_fields.py and re-submit."
+        )
+    if len(matches) > 1:
+        raise HierarchyError(
+            f"{len(matches)} root domains are named {wanted!r}, so the selection "
+            f"is ambiguous. Rename one of them."
+        )
+    return matches[0].urn
 
 
 def _load_parent(client: DataHubClient, urn: str | None, label: str) -> DomainNode | None:

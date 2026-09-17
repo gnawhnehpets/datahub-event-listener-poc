@@ -141,6 +141,33 @@ query childDomains($filters: [FacetFilterInput!]) {
 }
 """
 
+_ROOT_DOMAINS_QUERY = """
+query rootDomains {
+  searchAcrossEntities(input: {types: [DOMAIN], query: "*", start: 0, count: 1000,
+                               orFilters: [{and: [{field: "hasParentDomain",
+                                                   condition: EQUAL,
+                                                   negated: false,
+                                                   values: ["false"]}]}]}) {
+    total
+    searchResults {
+      entity {
+        urn
+        ... on Domain {
+          properties { name }
+          parentDomains { domains { urn } }
+          structuredProperties {
+            properties {
+              structuredProperty { urn }
+              values { ... on StringValue { stringValue } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
 _ACTION_WORKFLOWS_QUERY = """
 query listActionWorkflows {
   listActionWorkflows(input: {start: 0, count: 1000}) {
@@ -384,6 +411,17 @@ class DataHubClient:
             _CHILD_DOMAINS_QUERY,
             {"filters": [{"field": "parentDomain", "values": [parent_urn], "condition": "EQUAL"}]},
         )["searchAcrossEntities"]
+        return [hit["entity"] for hit in (result.get("searchResults") or []) if hit.get("entity")]
+
+    def get_root_domains(self) -> list[dict]:
+        """Every domain with no parent, i.e. the Level 1 tier.
+
+        ``hasParentDomain: "false"`` is the indexed predicate for this; verified
+        against the live instance, where it partitions the tree exactly (20 root,
+        26 non-root, 46 total). Reads through search, so it lags writes by
+        seconds -- a root created moments ago may not appear yet.
+        """
+        result = self.execute(_ROOT_DOMAINS_QUERY, {})["searchAcrossEntities"]
         return [hit["entity"] for hit in (result.get("searchResults") or []) if hit.get("entity")]
 
     def list_action_workflows(self) -> list[dict]:

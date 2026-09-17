@@ -107,6 +107,16 @@ class FakeClient:
     def get_child_domains(self, parent_urn):
         return []
 
+    def get_root_domains(self):
+        return [
+            {
+                "urn": PARENT,
+                "properties": {"name": "Risk & Compliance"},
+                "parentDomains": {"domains": []},
+                "structuredProperties": {"properties": []},
+            }
+        ]
+
     def resolve_principals(self, urns):
         from actions.recipients import Recipient
 
@@ -222,7 +232,7 @@ def request_for(workflow: str, result: str, fields: list[dict], entity=None) -> 
 
 DOMAIN_FIELDS = [
     {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
-    {"id": "parent_domain", "values": [{"stringValue": PARENT}]},
+    {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
     {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
 ]
 ACCESS_FIELDS = [
@@ -764,7 +774,7 @@ def test_a_group_owner_is_declared_as_a_group():
     """
     fields = [
         {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
-        {"id": "parent_domain", "values": [{"stringValue": PARENT}]},
+        {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
         {"id": "technical_owners", "values": [{"stringValue": GROUP}]},
         {"id": "data_stewards", "values": [{"stringValue": OWNER}]},
     ]
@@ -781,7 +791,7 @@ def test_mixed_user_and_group_owners_are_sent_in_one_call():
     """Splitting them would half-apply if the second call failed."""
     fields = [
         {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
-        {"id": "parent_domain", "values": [{"stringValue": PARENT}]},
+        {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
         {"id": "technical_owners", "values": [{"stringValue": GROUP}]},
         {"id": "data_stewards", "values": [{"stringValue": OWNER}]},
     ]
@@ -1179,3 +1189,43 @@ def test_the_shipped_recipe_binds_its_name_keyed_entry_to_a_urn():
     assert not any(k.startswith("Dataset") for k in action.workflows), (
         "a name survived into the routing table, so act() would never match it"
     )
+
+
+def test_parent_domain_is_submitted_as_a_name_and_resolved_to_a_root_urn():
+    """parent_domain is a STRING dropdown now, so the payload carries a name.
+
+    The URN picker could not be constrained to Level 1, so the field became a
+    generated list of root names. The listener therefore has to map that name
+    back to a urn before anything else -- and scope the lookup to roots, so a
+    Level 2 that happens to share a name cannot be selected by accident.
+    """
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
+        {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+        {"id": "data_stewards", "values": [{"stringValue": OWNER}]},
+    ]
+    action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
+    action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+
+    created = next(v for op, v in client.mutations if op == "createDomain")
+    assert created["input"]["parentDomain"] == PARENT
+
+
+def test_an_unknown_parent_domain_name_fails_loudly():
+    """A stale dropdown option must name the problem, not resolve to nothing.
+
+    Silently treating it as a root proposal would create a top-level domain the
+    requester never asked for, and three approvers already signed off on.
+    """
+    from actions.errors import DataHubError
+
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
+        {"id": "parent_domain", "values": [{"stringValue": "No Such Domain"}]},
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+        {"id": "data_stewards", "values": [{"stringValue": OWNER}]},
+    ]
+    action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
+    with pytest.raises(DataHubError, match="No Such Domain"):
+        action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
