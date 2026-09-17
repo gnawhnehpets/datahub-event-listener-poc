@@ -249,28 +249,77 @@ type**. `Field 'tags' in type 'Domain' is undefined`; Domain exposes only
 `displayProperties`. So a tag-based workaround would validate and then silently
 match nothing, emptying the picker with no API-visible symptom.
 
+**`filterCondition` is not a candidate filter at all.** It controls field
+*visibility*. Proof: the server derives it from `condition`. Our `level_2_*`
+fields set only `condition` (`SINGLE_FIELD_VALUE` on `parent_domain`), and the
+live definition reports a matching `filterCondition` the repo never wrote:
+
+```
+condition       : SINGLE_FIELD_VALUE  field=parent_domain  EQUAL [urn:li:domain:LOB]
+filterCondition : AND [ field=formField:parent_domain  EQUAL [urn:li:domain:LOB] ]
+```
+
+So "allow `hasParentDomain` here" would mean *show the field when the launching
+entity has no parent* — unrelated to which domains appear in the dropdown.
+
+### There is no way to constrain a URN entity picker
+
+Pursuing it properly leads to a dead end that is worth recording in full, because
+the server's own error message sends you to a mechanism that does not exist.
+
+`allowedValues` on a URN field is rejected — with advice:
+
+```
+[R_VALUE_TYPE_MISMATCH] field[parent_domain].allowedValues: URN-typed fields
+cannot use allowedValues — the picker is not value-scoped. Express the curated
+URN list as a dynamicSource with resolver=LITERAL_ENTITIES and the target URNs
+instead.
+```
+
+Following that advice fails:
+
+```
+[R1] field[parent_domain].dynamicSource.resolvers[0].resolver:
+Unknown resolver: LITERAL_ENTITIES
+```
+
+**The validator recommends a resolver the same validator rejects.** Sweeping
+thirteen plausible names (`LITERAL`, `ENTITIES`, `STATIC`, `URNS`, `SEARCH`,
+`EXPLICIT`, …) returns `Unknown resolver` for every one. The only resolver that
+exists is `IDENTITY`, and it is explicitly the wrong tool:
+
+```
+[R2] Resolver 'IDENTITY' returns actor URNs (CorpUser / CorpGroup)
+```
+
+`dynamicSource.filter` accepts a `DataHubViewFilterInput` and would be the natural
+home for `hasParentDomain`, but it cannot be used alone —
+`UpsertDynamicSourceInput.resolvers must not be empty` — and no resolver exists to
+pair it with.
+
+So: `allowedValues` forbidden, `dynamicSource` unusable, `filterCondition` is a
+different feature. **A URN picker cannot be narrowed at all in 1.7.0.7.**
+
 **Two traps worth internalising:**
 
-1. **GraphQL introspection does not catch this.** `FacetFilterInput.field` is
-   typed `String`, so any field name is type-valid. The constraint is semantic and
-   enforced only at upsert time.
+1. **GraphQL introspection does not catch any of this.**
+   `FacetFilterInput.field` and `DynamicResolverInput.resolver` are both typed
+   `String`, so every rejected value above is type-valid. The constraints are
+   semantic and enforced only at upsert.
 2. **`upsert_workflows.py --dry-run` is worthless as validation.** It makes no
    HTTP call — it only checks the file parses and has an `input` key. It reported
    success on a definition the server rejects with a 400.
 
 The good news: **a failed upsert is completely safe.** The 400 is atomic, and live
-state was verified byte-identical afterwards (`lastModified`, field count and step
-count all unchanged). So attempting a real upsert is the only trustworthy
-validation, and it costs nothing.
+state was verified byte-identical afterwards (`lastModified`, field and step counts
+unchanged). Attempting a real upsert is the only trustworthy validation, and it
+costs nothing. Probing on a throwaway URN with `entrypoints: []` keeps it invisible
+to users; `deleteActionWorkflow` cleans up.
 
-Consequence for the form: the picker still lists every depth, and
-`parent_domain`'s description says so explicitly rather than implying a filter that
-does not exist. A Level 3 parent is rejected by `level_for` — but only after all
-three approvals, since `router.act` ignores anything not `COMPLETED`.
-
-The precise ask for Acryl is narrow: **permit `hasParentDomain` in
-`filterCondition`.** It already exists in the index and already partitions
-correctly; only the allowlist blocks it.
+Consequence for the form: the picker lists every depth, and `parent_domain`'s
+description says so explicitly rather than implying a filter that does not exist.
+A Level 3 parent is rejected by `level_for` — but only after all three approvals,
+since `router.act` ignores anything not `COMPLETED`.
 
 ### Windows is not a declared platform
 
