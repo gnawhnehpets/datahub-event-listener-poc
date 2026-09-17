@@ -979,3 +979,31 @@ def test_list_action_workflows_tolerates_an_instance_with_none(monkeypatch):
     )
 
     assert client.list_action_workflows() == []
+
+
+def test_list_action_workflows_drops_entries_with_no_urn(monkeypatch):
+    """A workflow with no urn cannot be routed to, so it must not be offered.
+
+    Without this case the happy-path test passes whether or not the filter
+    exists, which makes the filter free to delete by accident.
+    """
+    from actions.client import DataHubClient
+
+    client = DataHubClient(server="https://example.invalid", token="token")
+    monkeypatch.setattr(
+        client,
+        "execute",
+        lambda query, variables: {
+            "listActionWorkflows": {
+                "workflows": [
+                    {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
+                    {"urn": "", "name": "Ghost"},
+                    {"name": "NoUrn"},
+                ]
+            }
+        },
+    )
+
+    assert client.list_action_workflows() == [
+        {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
+    ]
