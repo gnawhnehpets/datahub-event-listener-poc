@@ -100,7 +100,12 @@ class WorkflowRouterAction(Action):
                 "in the environment, or 'server' and 'token' in the action config"
             )
 
-        workflows = _normalize(config.get("workflows") or {})
+        # Hoisted out of the cls(...) return below so resolution can reuse it.
+        client = DataHubClient(server=server, token=token)
+
+        # Before the email validation, so those messages report resolved URNs
+        # rather than a mix of names and URNs.
+        workflows = _resolve_workflow_keys(client, _normalize(config.get("workflows") or {}))
         notify = config.get("notify") or {}
         # Costs one read per PENDING event, for every workflow on the instance,
         # since the event does not say which workflow it belongs to. Off makes
@@ -136,7 +141,7 @@ class WorkflowRouterAction(Action):
                         f"the workflow's own notify block"
                     )
 
-        return cls(client=DataHubClient(server=server, token=token),
+        return cls(client=client,
                    workflows=workflows, notify=notify, ctx=ctx,
                    log_progress=log_progress)
 

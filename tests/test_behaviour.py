@@ -1093,3 +1093,49 @@ def test_an_empty_table_short_circuits_without_a_lookup():
             raise AssertionError("must not call the API for an empty table")
 
     assert _resolver()(Exploding(), {}) == {}
+
+
+def test_create_refuses_to_start_on_an_unresolvable_workflow(monkeypatch):
+    """Fail at startup, not on the first real decision.
+
+    The framework retries an action three times, so a permanent config error
+    surfaces as three identical failures while the person waiting on the
+    approval gets nothing. create() already fails fast on missing credentials
+    and on a notify_ route with no RESEND_API_KEY; this joins them.
+    """
+    import actions.router as router_mod
+
+    monkeypatch.setenv("DATAHUB_GMS_URL", "https://example.invalid")
+    monkeypatch.setenv("DATAHUB_GMS_TOKEN", "token")
+    monkeypatch.setattr(
+        router_mod,
+        "DataHubClient",
+        lambda server, token: _WorkflowListing([(DOMAIN_WF, "Propose New Domain")]),
+    )
+
+    with pytest.raises(ValueError, match="No Such Workflow"):
+        router_mod.WorkflowRouterAction.create(
+            {"workflows": {"No Such Workflow": "just a label"}}, ctx=None
+        )
+
+
+def test_create_binds_a_name_keyed_config_to_urns(monkeypatch):
+    """The routing table the listener runs on must be urn-keyed.
+
+    act() looks up the spec by the event's workflowUrn, so a name left in place
+    would miss and the workflow would be treated as unlisted -- i.e. ignored.
+    """
+    import actions.router as router_mod
+
+    monkeypatch.setenv("DATAHUB_GMS_URL", "https://example.invalid")
+    monkeypatch.setenv("DATAHUB_GMS_TOKEN", "token")
+    monkeypatch.setattr(
+        router_mod,
+        "DataHubClient",
+        lambda server, token: _WorkflowListing([(DOMAIN_WF, "Propose New Domain")]),
+    )
+
+    action = router_mod.WorkflowRouterAction.create(
+        {"workflows": {"Propose New Domain": "just a label"}}, ctx=None
+    )
+    assert list(action.workflows) == [DOMAIN_WF]
