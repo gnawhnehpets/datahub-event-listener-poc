@@ -218,7 +218,7 @@ def build_parent_field(existing: dict, names: list[str]) -> dict:
 
 
 def code_field_values(nodes: dict[str, DomainNode]) -> tuple[list[str], list[str]]:
-    """Return (allowedValues, condition URNs) for the GC code field.
+    """Return (allowedValues, condition names) for the GC code field.
 
     The field is needed whenever the *derived Level 1* carries more than one
     code, which is a property of the ancestor, not of the selected parent.
@@ -226,28 +226,35 @@ def code_field_values(nodes: dict[str, DomainNode]) -> tuple[list[str], list[str
     allowedValues is a single flat list, so when several distinct Level 1s are
     ambiguous it is their union and therefore over-offers. That is safe: the
     listener re-checks the choice against the selected parent's own codes and
-    rejects a mismatch by name. Today only one Level 1 is ambiguous, so the
-    union is exact.
+    rejects a mismatch by name.
+
+    Only roots are considered, because ``parent_domain`` now offers only roots.
+    A deeper domain's name in this condition could never match the submitted
+    value, so including it would be dead weight that reads like coverage.
     """
     needs_field: list[str] = []
     codes: set[str] = set()
-    for node in selectable_parents(nodes):
+    for node in root_domains(nodes):
         level_1 = derived_level_1(node, nodes)
         if len(level_1.codes) > 1:
-            needs_field.append(node.urn)
+            needs_field.append(node.name)
             codes.update(level_1.codes)
-    return sorted(codes), sorted(needs_field)
+    return sorted(codes), sorted(set(needs_field))
 
 
-def build_code_field(existing: dict, values: list[str], urns: list[str]) -> dict:
-    """Patch only the generated parts, preserving hand-written wording."""
+def build_code_field(existing: dict, values: list[str], names: list[str]) -> dict:
+    """Patch only the generated parts, preserving hand-written wording.
+
+    ``names`` not URNs: ``parent_domain`` is a STRING dropdown of root names, so
+    the condition has to compare like for like.
+    """
     field = json.loads(json.dumps(existing))
     field["allowedValues"] = [{"stringValue": v} for v in values]
     field["condition"] = {
         "type": "SINGLE_FIELD_VALUE",
         "singleFieldValueCondition": {
             "field": "parent_domain",
-            "values": urns,
+            "values": names,
             "condition": "EQUAL",
             "negated": False,
         },
@@ -344,7 +351,10 @@ def level_2_fields(nodes: dict[str, DomainNode]) -> tuple[list[dict], list[str]]
                 "type": "SINGLE_FIELD_VALUE",
                 "singleFieldValueCondition": {
                     "field": "parent_domain",
-                    "values": [parent.urn],
+                    # The name, not the urn: parent_domain is a STRING dropdown.
+                    # A urn here silently never matches, so the dropdown would
+                    # never render and the form would look merely incomplete.
+                    "values": [parent.name],
                     "condition": "EQUAL",
                     "negated": False,
                 },

@@ -71,3 +71,37 @@ def test_build_parent_field_converts_urn_picker_to_string_dropdown():
     assert field["description"] == "hand-written wording that must survive"
     assert field["required"] is False
     assert existing["valueType"] == "URN", "must not mutate the input"
+
+
+def test_code_field_condition_uses_root_names_not_urns():
+    nodes = tree(
+        node("urn:li:domain:rc", "Risk & Compliance", codes=["GC001", "GC002"]),
+        node("urn:li:domain:kid", "Finance", ancestors=["urn:li:domain:rc"]),
+    )
+    values, names = g.code_field_values(nodes)
+
+    assert values == ["GC001", "GC002"]
+    assert names == ["Risk & Compliance"], "condition must name the root, not its urn"
+    assert not any(n.startswith("urn:") for n in names)
+
+
+def test_level_2_condition_uses_parent_name_not_urn():
+    nodes = tree(
+        node("urn:li:domain:rc", "Risk & Compliance"),
+        node("urn:li:domain:fin", "Finance", ancestors=["urn:li:domain:rc"]),
+    )
+    fields, warnings = g.level_2_fields(nodes)
+
+    assert warnings == []
+    assert len(fields) == 1
+    condition = fields[0]["condition"]["singleFieldValueCondition"]
+    assert condition["field"] == "parent_domain"
+    assert condition["values"] == ["Risk & Compliance"]
+
+
+def test_build_code_field_writes_names_into_the_condition():
+    existing = {"id": "l1_gc_domain_code", "description": "keep me",
+                "allowedValues": None, "condition": None}
+    field = g.build_code_field(existing, ["GC001"], ["Risk & Compliance"])
+    assert field["condition"]["singleFieldValueCondition"]["values"] == ["Risk & Compliance"]
+    assert field["description"] == "keep me"
