@@ -598,6 +598,73 @@ def test_every_labelled_field_the_form_offers_can_appear(_resend):
     assert not unlabelled, f"form fields with no label, silently dropped from email: {unlabelled}"
 
 
+def test_parent_domain_offers_only_root_domains():
+    """A Level 2 or Level 3 in the picker costs a whole approval cycle.
+
+    parent_domain is a URN picker over allowedEntityTypes: [DOMAIN]. With no
+    filterCondition, DataHub offers every domain at every depth. Two distinct
+    failures follow, and neither is visible at submission time:
+
+      * Picking a Level 3 puts the proposal at level 4, which level_for refuses
+        -- but only after all three approvals, because router.act ignores
+        anything that is not COMPLETED. The requester re-walks every gate.
+      * Picking a Level 2 SUCCEEDS while bypassing the level_2_* dropdowns,
+        which is the route generate_form_fields.py exists to keep correct.
+
+    The design intent is stated in generate_form_fields.py: "parent_domain
+    stays the Level 1 choice". Nothing enforced it -- the field is hand-written
+    and the generator only anchors on it to place the level_2_* block.
+
+    parentDomain is the indexed field; EXISTS negated isolates the roots.
+    Verified against live search: 19 of 45 domains match, every one of them
+    ancestor-free, and the complement is exactly the Level 2s and 3s.
+    """
+    definition = json.loads(
+        (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
+    )
+    parent = next(
+        f
+        for f in definition["input"]["trigger"]["form"]["fields"]
+        if f["id"] == "parent_domain"
+    )
+
+    condition = parent.get("filterCondition")
+    assert condition, (
+        "parent_domain has no filterCondition, so the picker offers Level 2 and "
+        "Level 3 domains; selecting a Level 3 fails only after all three approvals"
+    )
+
+    filters = condition.get("filters") or []
+    assert len(filters) == 1, f"expected a single root-only filter, got {filters}"
+    assert filters[0]["field"] == "parentDomain", filters[0]
+    assert filters[0]["condition"] == "EXISTS", filters[0]
+    assert filters[0]["negated"] is True, filters[0]
+
+
+def test_parent_domain_description_does_not_promise_picking_a_level_2():
+    """The description contradicted the field it documents.
+
+    It read "or a Level 2 domain to create a Level 3", which is precisely the
+    path the root-only filter removes. Left unchanged, the form would tell a
+    requester to do something the picker no longer allows -- and the wording is
+    what a reviewer reads to decide whether the filter is correct.
+    """
+    definition = json.loads(
+        (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
+    )
+    parent = next(
+        f
+        for f in definition["input"]["trigger"]["form"]["fields"]
+        if f["id"] == "parent_domain"
+    )
+
+    description = parent["description"].lower()
+    assert "level 2 domain to create a level 3" not in description, (
+        "description still tells the requester to pick a Level 2 directly, but "
+        "the filterCondition restricts the picker to Level 1"
+    )
+
+
 # ------------------------------------------------- state dir is cross-platform
 
 

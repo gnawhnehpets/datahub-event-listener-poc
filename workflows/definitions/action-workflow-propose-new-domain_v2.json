@@ -74,7 +74,7 @@
           {
             "id": "parent_domain",
             "name": "Parent domain",
-            "description": "The domain this one nests under. Leave blank to propose a root (Level 1) domain. Pick a Level 1 domain to create a Level 2, or a Level 2 domain to create a Level 3. The full hierarchy is derived from this one choice, so a mismatched pair is not possible.",
+            "description": "The Level 1 domain this one nests under. Leave blank to propose a root (Level 1) domain. Pick a Level 1 domain to create a Level 2; to create a Level 3, pick its Level 1 here and then use the Level 2 dropdown that appears. Only Level 1 domains are listed, because the full hierarchy is derived from this choice and a deeper parent would place the new domain past the three levels the taxonomy supports.",
             "valueType": "URN",
             "allowedEntityTypes": [
               "DOMAIN"
@@ -83,6 +83,17 @@
             "cardinality": "SINGLE",
             "required": false,
             "condition": null,
+            "filterCondition": {
+              "operator": "AND",
+              "filters": [
+                {
+                  "field": "parentDomain",
+                  "condition": "EXISTS",
+                  "negated": true,
+                  "values": []
+                }
+              ]
+            },
             "valuesSource": null
           },
           {
