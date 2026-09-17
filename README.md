@@ -178,8 +178,9 @@ the pipeline, but it is noise in the log.
 ## Pointing at another deployment
 
 `generate_form_fields.py --write` regenerates every instance-specific reference
-inside the form definition — the `level_2_*` conditions and options, the
-`l1_gc_domain_code` values, and the field ids derived from domain names.
+inside the form definition — `parent_domain`'s `valueType`, `allowedEntityTypes`,
+and `allowedValues` (the curated Level 1 list), the `level_2_*` conditions and
+options, the `l1_gc_domain_code` values, and the field ids derived from domain names.
 
 The routing table needs one manual decision. Keys in
 `action-route-workflow-decisions.yaml` may be a workflow **URN** or a workflow
@@ -204,6 +205,31 @@ Still manual on a new deployment, and not covered by the generator:
   three approvals.
 - `QUERY_COUNT = 1000` in the generator caps the domain fetch; past that it
   raises `IncompleteFetch` rather than proposing mass removals.
+
+### Drift detection and its limits
+
+`generate_form_fields.py --check` is the drift detector: it exits 1 if the
+committed definition no longer matches the live domain tree. **Nothing runs it
+automatically on this branch** — there is no CI, no cron, and no scheduled job.
+You must run it manually after any structural change to the domain hierarchy.
+
+Two failure modes worth knowing before you commit to that cadence:
+
+- **Renaming a root domain** breaks in-flight requests loudly, but only after
+  all three approvals have completed. The submitted name no longer matches any
+  root, so `_resolve_root` raises `HierarchyError`. The form must be regenerated,
+  deployed, and the request resubmitted.
+
+- **Creating a new root domain** makes that domain unproposable-under until the
+  form is regenerated and deployed. No error is raised at submission time — the
+  name simply does not appear in the dropdown, so the requester cannot select it.
+  The window is bounded by when you next run `--write` and deploy.
+
+Contrast this with the workflow-name resolution added in the same change cycle:
+a misconfigured workflow key fails fast at startup, before any event is processed,
+giving the operator an actionable error immediately. The domain-dropdown staleness
+fails late, after approvals, and only for the affected domains. Both are design
+choices; neither is an oversight. Know which you are dealing with.
 
 ## Known upstream issues
 
@@ -360,10 +386,12 @@ unchanged). Attempting a real upsert is the only trustworthy validation, and it
 costs nothing. Probing on a throwaway URN with `entrypoints: []` keeps it invisible
 to users; `deleteActionWorkflow` cleans up.
 
-Consequence for the form: the picker lists every depth, and `parent_domain`'s
-description says so explicitly rather than implying a filter that does not exist.
-A Level 3 parent is rejected by `level_for` — but only after all three approvals,
-since `router.act` ignores anything not `COMPLETED`.
+Consequence for the form: rather than an unconstrained URN picker, `parent_domain`
+is now a generated STRING dropdown listing only Level 1 (root) domain names.
+The generator scopes the list to roots at write time; the listener resolves the
+submitted name back to a root URN at runtime and refuses any name that does not
+match a current root — so a Level 2 or Level 3 domain cannot be chosen even if
+the dropdown were to become stale.
 
 ### Windows is not a declared platform
 
@@ -391,7 +419,7 @@ ingestion. A hosted answer would retire this whole section.
 .venv/bin/python -m pytest
 ```
 
-49 tests, no credentials, covering each cell of the table. They drive the real
+66 tests, no credentials, covering each cell of the table. They drive the real
 router against the shipped config file and fake only the two edges, GraphQL
 and Resend — so a test cannot pass while the YAML says something else.
 
@@ -414,10 +442,14 @@ src/actions/properties.py              structured-property and ownership payload
 src/actions/recipients.py              principal -> email address
 src/actions/errors.py                  the exception types
 
-workflows/definitions/                 the form definition, and upsert_workflows.py
-                                       to deploy it
+workflows/definitions/                 the form definition and upsert_workflows.py to deploy it
+workflows/definitions/generate_form_fields.py
+                                       regenerates parent_domain (valueType, allowedEntityTypes,
+                                       allowedValues), l1_gc_domain_code values/conditions,
+                                       and level_2_* dropdowns from the live domain tree
 
 tests/test_behaviour.py                proves the table above
+tests/test_generator.py                unit tests for the pure derivation in generate_form_fields.py
 ```
 
 ## The one thing not to lose

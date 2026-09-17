@@ -74,7 +74,7 @@
           {
             "id": "parent_domain",
             "name": "Parent domain",
-            "description": "Pick a LEVEL 1 domain only. Leave blank to propose a new Level 1 domain. Pick a Level 1 to create a Level 2; to create a Level 3, pick its Level 1 here and then use the Level 2 dropdown that appears. This list is NOT filtered by level, so Level 2 and Level 3 domains also appear \u2014 selecting one is rejected only after all three approvals have completed, and the request must then be resubmitted.",
+            "description": "Lists Level 1 (root) domains only. Leave blank to propose a new Level 1 domain. Pick a Level 1 to create a Level 2 beneath it. To create a Level 3, pick its Level 1 here and then choose the Level 2 from the dropdown that appears.",
             "valueType": "STRING",
             "allowedEntityTypes": null,
             "allowedValues": [

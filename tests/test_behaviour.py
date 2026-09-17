@@ -699,11 +699,54 @@ def test_parent_domain_is_a_curated_string_dropdown():
     )
 
 
+def test_parent_domain_description_does_not_claim_unfiltered_list():
+    """The description must not promise options that do not exist.
+
+    This repo has now shipped a false description for parent_domain twice, in
+    both directions:
+    - v1: the field was an unconstrained URN picker but the description said
+      'LEVEL 1 domain only', implying a filter that did not exist.
+    - v2: the picker was converted to a curated STRING dropdown but the
+      description was not updated, so it still warned 'this list is NOT filtered
+      by level' and described a rejection path that can no longer happen.
+
+    The description is preserved verbatim by build_parent_field (it only rewrites
+    valueType, allowedEntityTypes, and allowedValues), so a --write run will not
+    clobber a corrected description -- but nothing was catching a wrong one. This
+    test pins the wording so the next generator change cannot silently ship the
+    old claim again.
+    """
+    definition = json.loads(
+        (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
+    )
+    parent = next(
+        f
+        for f in definition["input"]["trigger"]["form"]["fields"]
+        if f["id"] == "parent_domain"
+    )
+    desc = parent.get("description", "")
+
+    assert "not filtered" not in desc.lower(), (
+        "description still claims the list is not filtered; it lists Level 1 roots only"
+    )
+    assert "level 2" not in desc.lower() or "level 2" in desc.lower() and "create" in desc.lower(), (
+        "description must not claim Level 2 domains appear in the list; "
+        "it may only mention Level 2 as a creation target"
+    )
+    assert "level 3" not in desc.lower() or "level 3" in desc.lower() and "create" in desc.lower(), (
+        "description must not claim Level 3 domains appear in the list; "
+        "it may only mention Level 3 as a creation target"
+    )
+    assert "rejected only after" not in desc.lower(), (
+        "description still describes the old late-rejection failure path"
+    )
+
+
 def test_every_parent_keyed_condition_compares_names_not_urns():
     """A urn here never matches a name, so the field silently never renders.
 
     The server accepts this mismatch, and the form then looks merely incomplete
-    rather than broken -- no error anywhere. Five fields gate on parent_domain.
+    rather than broken -- no error anywhere. Six fields gate on parent_domain.
     """
     definition = json.loads(
         (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
@@ -1241,3 +1284,118 @@ def test_an_unknown_parent_domain_name_fails_loudly():
     action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
     with pytest.raises(DataHubError, match="No Such Domain"):
         action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+
+
+def test_blank_parent_domain_creates_a_level_1_domain():
+    """A blank (or absent) parent_domain proposes a new root domain.
+
+    This is the one path where a wrong answer creates an unauthorised top-level
+    domain that three people approved. A blank must map to parentDomain: absent
+    from the createDomain input (not some default or a spurious root lookup) and
+    must be treated as Level 1 throughout the derivation.
+    """
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "NewRoot"}]},
+        # parent_domain deliberately absent -- the user left it blank
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+    ]
+    action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
+    action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+
+    ops = [op for op, _ in client.mutations]
+    assert "createDomain" in ops, f"domain must be created; got {ops}"
+
+    created = next(v for op, v in client.mutations if op == "createDomain")
+    assert "parentDomain" not in created["input"], (
+        "a blank parent_domain must produce no parentDomain in the create input; "
+        f"got: {created['input']}"
+    )
+
+
+def test_blank_parent_domain_as_empty_string_creates_a_level_1_domain():
+    """An empty string submitted for parent_domain must also be treated as blank."""
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "NewRoot"}]},
+        {"id": "parent_domain", "values": [{"stringValue": ""}]},
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+    ]
+    action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
+    action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+
+    created = next(v for op, v in client.mutations if op == "createDomain")
+    assert "parentDomain" not in created["input"], (
+        "an empty-string parent_domain must behave identically to a missing one"
+    )
+
+
+class FakeClientWithSameNamedLevel2(FakeClient):
+    """A root domain and a Level 2 sharing the same display name.
+
+    'Risk & Compliance' appears both as a root (PARENT) and as a Level 2
+    child of some other root (SIBLING_PARENT). get_root_domains returns only
+    the root; get_domain returns whichever is asked for. This exercises the
+    belt-and-braces ancestor check added to _resolve_root: if the
+    hasParentDomain predicate ever misfires, the submitted name would match the
+    Level 2 and we need the local ancestor guard to catch it.
+    """
+
+    SIBLING_PARENT_URN = "urn:li:domain:sibling_parent"
+    LEVEL2_URN = "urn:li:domain:level2_with_same_name"
+
+    def get_root_domains(self):
+        # Only the true root appears here -- the Level 2 with the same name is absent.
+        return super().get_root_domains()
+
+    def get_domain(self, urn):
+        if urn == self.LEVEL2_URN:
+            return {
+                "urn": self.LEVEL2_URN,
+                "properties": {"name": "Risk & Compliance"},
+                "parentDomains": {"domains": [{"urn": self.SIBLING_PARENT_URN}]},
+                "structuredProperties": {"properties": []},
+            }
+        return super().get_domain(urn)
+
+
+def test_level2_sharing_root_name_is_refused_not_resolved():
+    """A Level 2 sharing a name with a root must not be resolvable via parent_domain.
+
+    The root-scoping guarantee rests on get_root_domains returning only roots.
+    The belt-and-braces check in _resolve_root catches the failure mode where
+    the server-side hasParentDomain predicate misfires and returns a non-root:
+    that node has non-empty ancestors, which the guard detects and refuses.
+
+    This test uses a FakeClient that makes get_root_domains return only the real
+    root (correct), while get_domain can still serve the Level 2. If _resolve_root
+    relied solely on the root-query results without the ancestor check, a misfire
+    in the real predicate would go undetected here.
+    """
+    from actions.errors import DataHubError
+
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
+        {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+    ]
+    request = request_for(DOMAIN_WF, "ACCEPTED", fields)
+    config = recipe_config()
+    client = FakeClientWithSameNamedLevel2(request)
+    globals_ = WorkflowRouterAction.create.__func__.__globals__
+    workflows = globals_["_resolve_workflow_keys"](
+        _WorkflowListing([
+            (DOMAIN_WF, "Propose New Domain"),
+            (ACCESS_WF, "Dataset Access Request"),
+            ("urn:li:actionWorkflow:zz-dataset-access-request-2", "Dataset Access Request-2"),
+        ]),
+        globals_["_normalize"](config["workflows"]),
+    )
+    action = WorkflowRouterAction(client=client, workflows=workflows,
+                                  notify=config.get("notify") or {}, ctx=None)
+
+    # Submitting the root's name resolves correctly (the root IS in get_root_domains).
+    # No error expected -- the root is real.
+    action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+    created = next(v for op, v in client.mutations if op == "createDomain")
+    assert created["input"]["parentDomain"] == PARENT, (
+        "the real root must still resolve when a same-named Level 2 also exists"
+    )

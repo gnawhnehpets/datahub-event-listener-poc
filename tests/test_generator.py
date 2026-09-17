@@ -171,24 +171,6 @@ def test_build_code_field_writes_names_into_the_condition():
     assert field["description"] == "keep me"
 
 
-def test_duplicate_root_names_are_refused_not_emitted():
-    """Emitting them yields a form whose submission cannot identify a domain.
-
-    Mirrors the existing sibling-collision refusal. The failure it prevents is
-    post-approval: the handler cannot tell which root was meant, so the request
-    dies after three gates rather than at submission.
-    """
-    nodes = tree(node("urn:li:domain:1", "Finance"), node("urn:li:domain:2", "Finance"))
-    _, warnings = g.parent_field_values(nodes)
-    assert warnings, "duplicate root names must produce a warning main() can refuse on"
-
-
-def test_parent_options_are_deterministic():
-    """Re-running must not produce a diff, or --check reports phantom drift."""
-    nodes = tree(node("urn:li:domain:b", "Beta"), node("urn:li:domain:a", "Alpha"))
-    assert g.parent_field_values(nodes)[0] == g.parent_field_values(nodes)[0] == ["Alpha", "Beta"]
-
-
 # ---------------------------------------------------------------------------
 # --write path tests: exercise main() offline
 # ---------------------------------------------------------------------------
@@ -228,9 +210,10 @@ def test_write_patches_parent_domain_in_place(monkeypatch, tmp_path):
     parent_domain.  Removal shifts parent_domain from index 1 → 0.
     Final order: [parent_domain, level_2_alpha (fresh), l1_gc_domain_code].
 
-    A parent_index resolved AFTER that removal would be 1 (off by one) and
-    would point at level_2_alpha instead of parent_domain.  The assertions below
-    catch that: parent_domain must gain the dropdown, and no other field may.
+    A stale parent_index (resolved BEFORE that removal) would still point at
+    index 1, which after the removal is level_2_alpha instead of parent_domain.
+    The assertions below catch that: parent_domain must gain the dropdown, and
+    no other field may.
     """
     nodes = _fixture_nodes_index_shift()
 

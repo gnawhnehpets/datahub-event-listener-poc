@@ -153,15 +153,6 @@ def derived_level_1(node: DomainNode, nodes: dict[str, DomainNode]) -> DomainNod
     return node
 
 
-def selectable_parents(nodes: dict[str, DomainNode]) -> list[DomainNode]:
-    """Domains that may be chosen as ``parent_domain``.
-
-    A domain at MAX_DEPTH cannot take a child, so offering it would produce a
-    proposal the listener rejects for depth.
-    """
-    return [n for n in nodes.values() if len(n.ancestors) + 2 <= MAX_DEPTH]
-
-
 PARENT_FIELD = "parent_domain"
 
 
@@ -375,7 +366,7 @@ def apply_level_2_fields(fields: list[dict], generated: list[dict]) -> tuple[int
     new = {f["id"] for f in generated}
 
     fields[:] = [f for f in fields if not f["id"].startswith(LEVEL_2_PREFIX)]
-    anchor = next(i for i, f in enumerate(fields) if f["id"] == "parent_domain")
+    anchor = next(i for i, f in enumerate(fields) if f["id"] == PARENT_FIELD)
     fields[anchor + 1 : anchor + 1] = generated
 
     return len(new - old), len(old - new), len(old & new)
@@ -465,8 +456,6 @@ def main() -> int:
               f"is not shown, so the request fails after all three approvals")
     for n in removed_n:
         print(f"  - {n}")
-    if not stale:
-        print("\nup to date; nothing to regenerate")
 
     parent_index = next(i for i, f in enumerate(fields) if f["id"] == PARENT_FIELD)
     parent_current = fields[parent_index]
@@ -474,7 +463,11 @@ def main() -> int:
 
     added_p = sorted(set(parent_names) - set(current_parents))
     removed_p = sorted(set(current_parents) - set(parent_names))
-    parent_stale = bool(added_p or removed_p) or parent_current.get("valueType") != "STRING"
+    parent_stale = (
+        bool(added_p or removed_p)
+        or parent_current.get("valueType") != "STRING"
+        or parent_current.get("allowedEntityTypes") is not None
+    )
 
     print(f"\n{PARENT_FIELD}.allowedValues ({len(current_parents)} committed, "
           f"{len(parent_names)} live)")
@@ -534,6 +527,12 @@ def main() -> int:
     for w in l2_warnings:
         print(f"  WARNING: {w}")
 
+    # Print the all-clear only after every staleness contribution has been
+    # folded in. Printing it earlier (e.g. after the GC-code section) produces
+    # a report that says "up to date" and then lists additions and exits 1 --
+    # a contradiction that makes people distrust the check.
+    if not stale:
+        print("\nup to date; nothing to regenerate")
 
     removals = describe_removals(fields, level_2, removed_v, removed_n)
     removals += [f"parent_domain option {p!r}" for p in removed_p]

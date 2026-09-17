@@ -226,7 +226,21 @@ def _resolve_root(client: DataHubClient, value: str | None) -> str | None:
             f"{len(matches)} root domains are named {wanted!r}, so the selection "
             f"is ambiguous. Rename one of them."
         )
-    return matches[0].urn
+    matched = matches[0]
+    # Belt-and-braces: the root guarantee rests on the server-side
+    # ``hasParentDomain: "false"`` predicate.  If that predicate ever stops
+    # partitioning the tree correctly, a Level 2 domain would pass the name
+    # lookup above and ``level_for`` would return 3, letting a Level 3 domain
+    # be created while bypassing the narrowing dropdowns -- exactly the bug
+    # this whole change exists to prevent.  The data is already in hand, so
+    # verify it independently rather than trusting the query alone.
+    if matched.ancestors:
+        raise HierarchyError(
+            f"{wanted!r} was returned by the root-domain query but has ancestors "
+            f"{matched.ancestors!r}; it is not a root. "
+            f"Re-run generate_form_fields.py to refresh the dropdown."
+        )
+    return matched.urn
 
 
 def _load_parent(client: DataHubClient, urn: str | None, label: str) -> DomainNode | None:

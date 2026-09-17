@@ -420,9 +420,25 @@ class DataHubClient:
         against the live instance, where it partitions the tree exactly (20 root,
         26 non-root, 46 total). Reads through search, so it lags writes by
         seconds -- a root created moments ago may not appear yet.
+
+        A short read is treated as a hard error rather than a silent truncation.
+        Past the query's count limit, a missing root domain would make
+        ``_resolve_root`` report a real root name as "not a root domain", sending
+        the operator to re-run the generator rather than pointing at the real
+        cause. The same logic applies here as in the generator's
+        ``IncompleteFetch``: a partial view inverts the answer rather than merely
+        degrading it, so a loud failure is safer than a quiet one.
         """
         result = self.execute(_ROOT_DOMAINS_QUERY, {})["searchAcrossEntities"]
-        return [hit["entity"] for hit in (result.get("searchResults") or []) if hit.get("entity")]
+        hits = result.get("searchResults") or []
+        total = result.get("total") or 0
+        if total > len(hits):
+            raise DataHubError(
+                f"Root-domain query reports {total} domains but returned {len(hits)}. "
+                f"Raise the count limit in _ROOT_DOMAINS_QUERY (currently 1000) or "
+                f"page the query; _resolve_root cannot be trusted against a partial view."
+            )
+        return [hit["entity"] for hit in hits if hit.get("entity")]
 
     def list_action_workflows(self) -> list[dict]:
         """Every Action Workflow on the instance as ``{urn, name}``.
