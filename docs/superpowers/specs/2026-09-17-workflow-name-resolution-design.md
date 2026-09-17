@@ -1,7 +1,7 @@
 # Resolve Action Workflow URNs by name at startup
 
 **Date:** 2026-09-17
-**Status:** approved, not implemented
+**Status:** implemented (commits 309eb96..99e0ff3)
 
 ## Problem
 
@@ -213,7 +213,7 @@ the listener is healthy.
 ### Testing
 
 `FakeClient` in `tests/test_behaviour.py` gains `list_action_workflows`, returning
-a small fixed list. Five cases, all credential-free:
+a small fixed list. Thirteen cases ship, all credential-free; the core six are:
 
 1. A name-keyed entry resolves to the matching URN.
 2. An unknown name raises `ValueError` and the message lists available names.
@@ -225,6 +225,12 @@ a small fixed list. Five cases, all credential-free:
 Case 4 is the backward-compatibility guarantee: existing configs keep their keys.
 Case 5 is the half-solved-problem guard — without it, a config carried to a new
 deployment still fails silently, and the whole change would be cosmetic.
+
+The implementation also adds a **`configured twice` guard** (case 7, beyond the
+original design): if a name key and a URN key both refer to the same live
+workflow, the resolver refuses rather than silently dropping one spec. This went
+beyond the spec because the table is a filter — losing a spec silently is the
+exact failure the change was built to prevent.
 
 ## Out of scope
 
@@ -267,7 +273,12 @@ note.
 
 **One extra API call at startup, unconditionally.** Since URN keys are validated
 too, there is no fast path. Negligible against a pipeline that then polls
-continuously.
+continuously. The more consequential implication: `create()` is no longer
+network-free at startup. An expired token or transient network failure at boot
+now prevents startup entirely, whereas before those would only surface on the
+first real decision. Pure notify-config errors (missing `RESEND_API_KEY`,
+missing `from_address`) also can no longer be validated offline without live
+credentials, since the workflow-key lookup runs first.
 
 **Search-index lag does not apply.** `listActionWorkflows` reads workflow
 entities directly, not through the domain search index, so a workflow created

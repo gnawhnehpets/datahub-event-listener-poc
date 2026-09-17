@@ -1080,14 +1080,18 @@ def test_a_duplicated_name_is_ambiguous_and_refused():
 
     'Dynamic Domain Selection POC' and 'Data Product Access Request' each appear
     twice, so name-keying is a per-entry option rather than a blanket
-    replacement. The error has to point at the URN form.
+    replacement. The error has to name both URNs so the operator knows which to
+    use without having to run discovery themselves.
     """
     listing = _WorkflowListing([
         ("urn:li:actionWorkflow:one", "Dataset Access Request"),
         ("urn:li:actionWorkflow:two", "Dataset Access Request"),
     ])
-    with pytest.raises(ValueError, match="2 Action Workflows are named"):
+    with pytest.raises(ValueError, match="2 Action Workflows are named") as exc_info:
         _resolver()(listing, {"Dataset Access Request": {"label": "x"}})
+    msg = str(exc_info.value)
+    assert "urn:li:actionWorkflow:one" in msg, f"first URN missing from error: {msg}"
+    assert "urn:li:actionWorkflow:two" in msg, f"second URN missing from error: {msg}"
 
 
 def test_naming_the_same_workflow_twice_is_refused():
@@ -1161,7 +1165,10 @@ def test_the_shipped_recipe_binds_its_name_keyed_entry_to_a_urn():
 
     Routing tests reach this path indirectly, so a typo in the YAML key would
     surface as an opaque construction failure rather than naming the problem.
-    This asserts the binding the shipped config actually depends on.
+    This catches that: it verifies the YAML name key matches the fixture name
+    in build()'s _WorkflowListing, confirming the entry resolves to ACCESS_WF
+    offline. It does not verify the name against a live instance, which would
+    be required to confirm portability to another deployment.
     """
     action, _ = build(request_for(ACCESS_WF, "ACCEPTED", ACCESS_FIELDS, entity=None))
 

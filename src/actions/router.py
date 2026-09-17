@@ -72,15 +72,26 @@ class WorkflowRouterAction(Action):
     Config::
 
         workflows:
-          "urn:li:actionWorkflow:propose-new-domain":
+          "urn:li:actionWorkflow:propose-new-domain":   # URN this repo chose
             label: Propose New Domain
             accepted: create_domain      # default: log
             rejected: log
-          "urn:li:actionWorkflow:other": Some Other Workflow   # short form: log both
+          "Dataset Access Request": log  # name-keyed -- resolved at startup
+
+    Keys may be a workflow **URN** or a workflow **name**. Names are resolved to
+    live URNs at startup. Names are the portable choice: a workflow created
+    through the DataHub UI has a per-instance GUID, so a URN-keyed entry does
+    not survive being pointed at another deployment. A URN this repo deploys
+    itself is a slug we choose, so it is already portable and stays URN-keyed.
+
+    Every key is validated at startup, name or URN. An unknown or ambiguous key
+    refuses to start rather than being ignored -- an unmatched key means
+    decisions from that workflow are silently ignored, with no error anywhere,
+    which is the failure worth refusing.
 
     ``workflows`` is both a filter and a naming table -- a decision from a
     workflow not listed is ignored. Omit it to log every workflow, which is what
-    you want before you know the URNs.
+    you want before you know what exists.
 
     ``server``/``token`` override DATAHUB_GMS_URL / DATAHUB_GMS_TOKEN. Prefer the
     environment; a token in a committed YAML is a leak.
@@ -418,9 +429,11 @@ def _resolve_workflow_keys(client: DataHubClient, workflows: dict) -> dict:
         if key.startswith(_WORKFLOW_URN_PREFIX):
             if key not in urns:
                 raise ValueError(
-                    f"{key} is not an Action Workflow on this instance. If this "
-                    f"config came from another deployment, key the entry by name "
-                    f"instead."
+                    f"{key} is not an Action Workflow on this instance. "
+                    f"Check for stray whitespace inside the URN (e.g. "
+                    f"'urn:li:actionWorkflow: 1fc9...' with an internal space). "
+                    f"If this config came from another deployment, key the entry "
+                    f"by name instead."
                 )
             target = key
         else:

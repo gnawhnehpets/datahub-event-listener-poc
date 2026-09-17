@@ -30,7 +30,9 @@ set -a && . ./.env && set +a
 it against a URN someone else owns overwrites their workflow.
 
 3. A personal access token that can create domains. Settings → Access Tokens
-→ Generate New Token. It needs `manageDomains`.
+→ Generate New Token. It needs `manageDomains` and `listActionWorkflows`
+(startup now calls `listActionWorkflows` to validate and resolve workflow
+keys; a token without that privilege turns any config into a startup refusal).
 
 4. The two structured properties, scoped to the domain entity type:
 `collibra.gcDomainCode` (MULTIPLE) and `collibra.lobLevel` (SINGLE). The listener
@@ -79,13 +81,24 @@ for name in ("collibra.gcDomainCode", "collibra.lobLevel"):
     print(f"property     : {name} -> {d['cardinality'] if d else 'MISSING'}")
 
 live = c.execute(
-    "query{ listActionWorkflows(input:{start:0,count:100}){ workflows { urn name } } }", {}
+    "query{ listActionWorkflows(input:{start:0,count:1000}){ workflows { urn name } } }", {}
 )["listActionWorkflows"]["workflows"]
-known = {w["urn"] for w in live} | {w["name"] for w in live if w.get("name")}
+live_urns = {w["urn"] for w in live if w.get("urn")}
+from collections import Counter
+name_counts = Counter(w["name"].strip() for w in live if w.get("name"))
 import yaml
 from expandvars import expandvars
 for key in yaml.safe_load(expandvars(open("action-route-workflow-decisions.yaml").read()))["action"]["config"]["workflows"]:
-    print(f"workflow     : {'found' if key in known else 'MISSING'} {key}")
+    key_s = key.strip()
+    if key_s in live_urns:
+        label = "found"
+    elif name_counts.get(key_s, 0) > 1:
+        label = "AMBIGUOUS"
+    elif name_counts.get(key_s, 0) == 1:
+        label = "found"
+    else:
+        label = "MISSING"
+    print(f"workflow     : {label} {key}")
 
 key = os.environ.get("RESEND_API_KEY", "")
 print("resend key   :", "set" if key else "NOT SET (fine if every outcome routes to log)")
@@ -378,7 +391,7 @@ ingestion. A hosted answer would retire this whole section.
 .venv/bin/python -m pytest
 ```
 
-14 tests, no credentials, covering each cell of the table. They drive the real
+49 tests, no credentials, covering each cell of the table. They drive the real
 router against the shipped config file and fake only the two edges, GraphQL
 and Resend — so a test cannot pass while the YAML says something else.
 

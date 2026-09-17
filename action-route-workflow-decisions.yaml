@@ -120,8 +120,9 @@ action:
     # stops the listener rather than being ignored -- being ignored is silent,
     # and that is the failure worth refusing.
     #
-    # Two live workflows currently share a name, so name-keying is not available
-    # for every entry; use the URN for those.
+    # Two names are currently duplicated on the live instance -- 'Dynamic Domain
+    # Selection POC' and 'Data Product Access Request' each appear twice -- so
+    # name-keying is not available for every entry; use the URN for those.
     #
     # Discover both with:
     #   .venv/bin/python workflows/definitions/fetch_action_workflows.py
