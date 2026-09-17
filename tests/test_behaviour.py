@@ -598,26 +598,39 @@ def test_every_labelled_field_the_form_offers_can_appear(_resend):
     assert not unlabelled, f"form fields with no label, silently dropped from email: {unlabelled}"
 
 
-def test_parent_domain_offers_only_root_domains():
-    """A Level 2 or Level 3 in the picker costs a whole approval cycle.
+def test_parent_domain_carries_no_filter_condition():
+    """A filterCondition here makes the whole definition undeployable.
 
-    parent_domain is a URN picker over allowedEntityTypes: [DOMAIN]. With no
-    filterCondition, DataHub offers every domain at every depth. Two distinct
-    failures follow, and neither is visible at submission time:
+    We wanted the opposite of this test: restrict the picker to root (Level 1)
+    domains, because the unfiltered picker offers every depth and both wrong
+    choices are expensive. Picking a Level 3 puts the proposal at level 4, which
+    level_for refuses -- but only after all three approvals, since router.act
+    ignores anything not COMPLETED. Picking a Level 2 succeeds while bypassing
+    the level_2_* dropdowns entirely.
 
-      * Picking a Level 3 puts the proposal at level 4, which level_for refuses
-        -- but only after all three approvals, because router.act ignores
-        anything that is not COMPLETED. The requester re-walks every gate.
-      * Picking a Level 2 SUCCEEDS while bypassing the level_2_* dropdowns,
-        which is the route generate_form_fields.py exists to keep correct.
+    It cannot be done. upsertActionWorkflow validates filterCondition against a
+    fixed allowlist and rejects the whole mutation otherwise:
 
-    The design intent is stated in generate_form_fields.py: "parent_domain
-    stays the Level 1 choice". Nothing enforced it -- the field is hand-written
-    and the generator only anchors on it to place the level_2_* block.
+        Criterion.field '<x>' is neither a 'formField:<id>' reference nor a
+        known launching-entity attribute [owners, entityType, subTypes, tags,
+        platform, domain, applications, dataProducts, container, glossaryTerms]
 
-    parentDomain is the indexed field; EXISTS negated isolates the roots.
-    Verified against live search: 19 of 45 domains match, every one of them
-    ancestor-free, and the complement is exactly the Level 2s and 3s.
+    Three candidates were tested against the live instance. All rejected:
+
+        parentDomain EXISTS negated      -- correct field, 19/26 split, rejected
+        hasParentDomain EQUAL "false"    -- correct field, 20/26 split, rejected
+        structuredProperties.collibra.lobLevel EQUAL "1"  -- rejected
+
+    The first two are real, working search-index fields. filterCondition simply
+    does not consult the index. And every field it DOES accept is absent from the
+    Domain type -- `tags` is not even a field on Domain -- so a tag workaround
+    would validate and then silently match nothing, emptying the picker.
+
+    So this test guards deployability, not behaviour: adding a filterCondition
+    back makes upsert_workflows.py fail with a 400 while the rest of the suite
+    stays green. Note that GraphQL introspection does NOT catch it, because
+    FacetFilterInput.field is typed String -- the constraint is semantic and
+    enforced only at upsert. See README "Known upstream issues".
     """
     definition = json.loads(
         (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
@@ -628,26 +641,32 @@ def test_parent_domain_offers_only_root_domains():
         if f["id"] == "parent_domain"
     )
 
-    condition = parent.get("filterCondition")
-    assert condition, (
-        "parent_domain has no filterCondition, so the picker offers Level 2 and "
-        "Level 3 domains; selecting a Level 3 fails only after all three approvals"
+    assert parent.get("filterCondition") is None, (
+        "parent_domain has a filterCondition, which upsertActionWorkflow rejects "
+        f"with a 400: {parent.get('filterCondition')}. The definition cannot be "
+        "deployed. See this test's docstring for the three candidates already ruled out."
     )
 
-    filters = condition.get("filters") or []
-    assert len(filters) == 1, f"expected a single root-only filter, got {filters}"
-    assert filters[0]["field"] == "parentDomain", filters[0]
-    assert filters[0]["condition"] == "EXISTS", filters[0]
-    assert filters[0]["negated"] is True, filters[0]
 
+def test_parent_domain_description_admits_the_list_is_unfiltered():
+    """The description is the only thing steering requesters, so it must be true.
 
-def test_parent_domain_description_does_not_promise_picking_a_level_2():
-    """The description contradicted the field it documents.
+    Since filterCondition cannot restrict this picker (see the test above), the
+    wording carries the whole burden. Two ways to get it wrong, and this repo has
+    now made both:
 
-    It read "or a Level 2 domain to create a Level 3", which is precisely the
-    path the root-only filter removes. Left unchanged, the form would tell a
-    requester to do something the picker no longer allows -- and the wording is
-    what a reviewer reads to decide whether the filter is correct.
+      * The original said "or a Level 2 domain to create a Level 3", which
+        bypasses the level_2_* dropdowns the generator maintains.
+      * A later revision claimed "Only Level 1 domains are listed" -- written
+        while the filter was expected to work. It shipped to the live form after
+        the filter was reverted, so the form actively lied: every depth is still
+        listed.
+
+    A description that promises filtering nobody implements is worse than one
+    that admits the gap, because a requester who trusts it has no reason to look
+    at what they picked. So this asserts the wording tells the truth: it must not
+    claim the list is restricted, and it must warn that a wrong pick is caught
+    only after every approval has completed.
     """
     definition = json.loads(
         (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
@@ -659,9 +678,22 @@ def test_parent_domain_description_does_not_promise_picking_a_level_2():
     )
 
     description = parent["description"].lower()
+
     assert "level 2 domain to create a level 3" not in description, (
-        "description still tells the requester to pick a Level 2 directly, but "
-        "the filterCondition restricts the picker to Level 1"
+        "description tells the requester to pick a Level 2 directly, which bypasses "
+        "the level_2_* dropdowns that generate_form_fields.py keeps in sync"
+    )
+    assert "only level 1 domains are listed" not in description, (
+        "description claims the picker is filtered to Level 1. It is not -- "
+        "filterCondition cannot express that, so this promise is false"
+    )
+    assert "not filtered" in description, (
+        "description must state that the list is unfiltered, since nothing in the "
+        "form prevents selecting a Level 2 or Level 3"
+    )
+    assert "after all three approvals" in description, (
+        "description must warn that a wrong parent is only rejected after every "
+        "approval gate, which is what makes the mistake expensive"
     )
 
 

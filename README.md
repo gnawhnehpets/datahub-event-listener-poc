@@ -215,6 +215,63 @@ different name; if that receives events, the cursor was the problem.
 
 We have asked Acryl whether a committed offset can be inspected or rewound.
 
+### `filterCondition` cannot restrict an entity picker by hierarchy
+
+We wanted `parent_domain` to offer only root (Level 1) domains. **It cannot be
+done**, and this is recorded so nobody spends another afternoon on it.
+
+`upsertActionWorkflow` validates `filterCondition` against a fixed allowlist and
+rejects the entire mutation otherwise:
+
+```
+Workflow validation failed: [FILTER] field[parent_domain].filterCondition:
+Criterion.field '<x>' is neither a 'formField:<id>' reference nor a known
+launching-entity attribute [owners, entityType, subTypes, tags, platform,
+domain, applications, dataProducts, container, glossaryTerms]
+```
+
+Three candidates were tested against a live instance. All rejected:
+
+| Candidate | Valid search-index field? | `filterCondition`? |
+|---|---|---|
+| `parentDomain` EXISTS, negated | Yes — partitions 19 / 26 | **Rejected** |
+| `hasParentDomain` EQUAL `"false"` | Yes — partitions 20 / 26 | **Rejected** |
+| `structuredProperties.collibra.lobLevel` EQUAL `"1"` | — | **Rejected** |
+
+The first two are real, working index fields — verified by querying
+`searchAcrossEntities` directly, where each cleanly separates root domains from
+Level 2s and 3s. **`filterCondition` simply does not consult the search index.**
+
+The fields it *does* accept (`tags`, `subTypes`, `entityType`, `domain` — all
+confirmed accepted) are useless here, because **none of them exist on the `Domain`
+type**. `Field 'tags' in type 'Domain' is undefined`; Domain exposes only
+`properties`, `ownership`, `parentDomains`, `structuredProperties` and
+`displayProperties`. So a tag-based workaround would validate and then silently
+match nothing, emptying the picker with no API-visible symptom.
+
+**Two traps worth internalising:**
+
+1. **GraphQL introspection does not catch this.** `FacetFilterInput.field` is
+   typed `String`, so any field name is type-valid. The constraint is semantic and
+   enforced only at upsert time.
+2. **`upsert_workflows.py --dry-run` is worthless as validation.** It makes no
+   HTTP call — it only checks the file parses and has an `input` key. It reported
+   success on a definition the server rejects with a 400.
+
+The good news: **a failed upsert is completely safe.** The 400 is atomic, and live
+state was verified byte-identical afterwards (`lastModified`, field count and step
+count all unchanged). So attempting a real upsert is the only trustworthy
+validation, and it costs nothing.
+
+Consequence for the form: the picker still lists every depth, and
+`parent_domain`'s description says so explicitly rather than implying a filter that
+does not exist. A Level 3 parent is rejected by `level_for` — but only after all
+three approvals, since `router.act` ignores anything not `COMPLETED`.
+
+The precise ask for Acryl is narrow: **permit `hasParentDomain` in
+`filterCondition`.** It already exists in the index and already partitions
+correctly; only the allowlist blocks it.
+
 ### Windows is not a declared platform
 
 The package declares `Operating System :: Unix`, `POSIX :: Linux` and
