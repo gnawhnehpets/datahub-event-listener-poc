@@ -433,7 +433,8 @@ def main() -> int:
     nodes = fetch_domains(DataHubClient(server=server, token=token))
     print(f"fetched {len(nodes)} domains")
 
-    values, urns = code_field_values(nodes)
+    values, names = code_field_values(nodes)
+    parent_names, parent_warnings = parent_field_values(nodes)
 
     document = json.loads(DEFINITION.read_text())
     fields = document["input"]["trigger"]["form"]["fields"]
@@ -441,13 +442,13 @@ def main() -> int:
     current = fields[index]
 
     current_values = [v["stringValue"] for v in current.get("allowedValues") or []]
-    current_urns = ((current.get("condition") or {}).get("singleFieldValueCondition") or {}).get("values") or []
+    current_names = ((current.get("condition") or {}).get("singleFieldValueCondition") or {}).get("values") or []
 
     added_v = sorted(set(values) - set(current_values))
     removed_v = sorted(set(current_values) - set(values))
-    added_u = sorted(set(urns) - set(current_urns))
-    removed_u = sorted(set(current_urns) - set(urns))
-    stale = bool(added_v or removed_v or added_u or removed_u)
+    added_n = sorted(set(names) - set(current_names))
+    removed_n = sorted(set(current_names) - set(names))
+    stale = bool(added_v or removed_v or added_n or removed_n)
 
     print(f"\n{CODE_FIELD}.allowedValues")
     print(f"  committed : {current_values}")
@@ -458,14 +459,36 @@ def main() -> int:
     for v in removed_v:
         print(f"  - {v}   no longer on any ambiguous Level 1")
 
-    print(f"\n{CODE_FIELD}.condition ({len(current_urns)} committed, {len(urns)} live)")
-    for u in added_u:
-        print(f"  + {u}  ({nodes[u].name if u in nodes else '?'}) -- field is required here but "
+    print(f"\n{CODE_FIELD}.condition ({len(current_names)} committed, {len(names)} live)")
+    for n in added_n:
+        print(f"  + {n}  -- field is required here but "
               f"is not shown, so the request fails after all three approvals")
-    for u in removed_u:
-        print(f"  - {u}  ({nodes[u].name if u in nodes else 'missing from instance'})")
+    for n in removed_n:
+        print(f"  - {n}")
     if not stale:
         print("\nup to date; nothing to regenerate")
+
+    parent_index = next(i for i, f in enumerate(fields) if f["id"] == PARENT_FIELD)
+    parent_current = fields[parent_index]
+    current_parents = [v["stringValue"] for v in parent_current.get("allowedValues") or []]
+
+    added_p = sorted(set(parent_names) - set(current_parents))
+    removed_p = sorted(set(current_parents) - set(parent_names))
+    parent_stale = bool(added_p or removed_p) or parent_current.get("valueType") != "STRING"
+
+    print(f"\n{PARENT_FIELD}.allowedValues ({len(current_parents)} committed, "
+          f"{len(parent_names)} live)")
+    for p in added_p:
+        print(f"  + {p}   a root domain nobody can currently propose under")
+    for p in removed_p:
+        print(f"  - {p}   no longer a root, or gone from the instance")
+    for w in parent_warnings:
+        print(f"  WARNING: {w}")
+    if parent_current.get("valueType") != "STRING":
+        print(f"  valueType is {parent_current.get('valueType')!r}, not 'STRING' -- "
+              f"the picker is unconstrained and offers every depth")
+
+    stale = stale or parent_stale
 
     level_2, l2_warnings = level_2_fields(nodes)
     current_l2 = [f["id"] for f in fields if f["id"].startswith(LEVEL_2_PREFIX)]
@@ -512,7 +535,8 @@ def main() -> int:
         print(f"  WARNING: {w}")
 
 
-    removals = describe_removals(fields, level_2, removed_v, removed_u)
+    removals = describe_removals(fields, level_2, removed_v, removed_n)
+    removals += [f"parent_domain option {p!r}" for p in removed_p]
 
     if args.write and stale:
         # Additions and removals are not equally risky. A missing option is the
@@ -541,8 +565,16 @@ def main() -> int:
                 print(f"  - {w}", file=sys.stderr)
             print("Rename the duplicates in DataHub, then re-run.", file=sys.stderr)
             return 1
+        if parent_warnings:
+            print("\nREFUSING to write: root domains share a name, so the "
+                  "submitted value cannot identify one --", file=sys.stderr)
+            for w in parent_warnings:
+                print(f"  - {w}", file=sys.stderr)
+            print("Rename the duplicates in DataHub, then re-run.", file=sys.stderr)
+            return 1
 
-        fields[index] = build_code_field(current, values, urns)
+        fields[index] = build_code_field(current, values, names)
+        fields[parent_index] = build_parent_field(parent_current, parent_names)
         added, removed, kept = apply_level_2_fields(fields, level_2)
         DEFINITION.write_text(json.dumps(document, indent=2) + "\n")
         print(f"\nrewrote {DEFINITION.name}: Level 2 dropdowns "
