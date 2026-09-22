@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import tempfile
 
 import pytest
 import yaml
@@ -28,6 +29,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RECIPE = ROOT / "action-route-workflow-decisions.yaml"
 
 DOMAIN_WF = "urn:li:actionWorkflow:propose-new-domain"
+# TARGET URN for the YAML's name-keyed "Dataset Access Request" entry.
+# The _WorkflowListing stub in build() maps that name to this URN so the suite
+# can resolve it offline. Delete this constant and every routing test that
+# exercises the access-request path passes vacuously — the workflow becomes
+# unlisted and its decisions are silently ignored rather than routed.
 ACCESS_WF = "urn:li:actionWorkflow:7110b19c-45b9-4450-b8bb-ba47d9f522ba"
 
 REQUESTER = "urn:li:corpuser:requester@x.com"
@@ -45,7 +51,9 @@ def recipe_config() -> dict:
         "DATAHUB_GMS_URL": "https://example.invalid",
         "DATAHUB_GMS_TOKEN": "token",
         "CONSUMER_ID": "test",
-        "FAILED_EVENTS_DIR": os.environ.get("FAILED_EVENTS_DIR", "/tmp"),
+        # gettempdir(), not "/tmp": the literal resolves to C:\tmp on Windows,
+        # so the suite would pass there while exercising the wrong path.
+        "FAILED_EVENTS_DIR": os.environ.get("FAILED_EVENTS_DIR", tempfile.gettempdir()),
     }
     previous = {k: os.environ.get(k) for k in env}
     os.environ.update(env)
@@ -98,6 +106,16 @@ class FakeClient:
 
     def get_child_domains(self, parent_urn):
         return []
+
+    def get_root_domains(self):
+        return [
+            {
+                "urn": PARENT,
+                "properties": {"name": "Risk & Compliance"},
+                "parentDomains": {"domains": []},
+                "structuredProperties": {"properties": []},
+            }
+        ]
 
     def resolve_principals(self, urns):
         from actions.recipients import Recipient
@@ -154,11 +172,21 @@ def _resend(monkeypatch):
 def build(request: dict, exists: bool = False) -> tuple[WorkflowRouterAction, FakeClient]:
     config = recipe_config()
     client = FakeClient(request, exists)
+    globals_ = WorkflowRouterAction.create.__func__.__globals__
+    # The shipped recipe keys one entry by NAME, so the helper has to resolve the
+    # same way create() does -- act() looks specs up by urn. Without this every
+    # routing test would silently treat that workflow as unlisted.
+    workflows = globals_["_resolve_workflow_keys"](
+        _WorkflowListing([
+            (DOMAIN_WF, "Propose New Domain"),
+            (ACCESS_WF, "Dataset Access Request"),
+            ("urn:li:actionWorkflow:zz-dataset-access-request-2", "Dataset Access Request-2"),
+        ]),
+        globals_["_normalize"](config["workflows"]),
+    )
     action = WorkflowRouterAction(
         client=client,
-        workflows=WorkflowRouterAction.create.__func__.__globals__["_normalize"](
-            config["workflows"]
-        ),
+        workflows=workflows,
         notify=config.get("notify") or {},
         ctx=None,
     )
@@ -204,7 +232,7 @@ def request_for(workflow: str, result: str, fields: list[dict], entity=None) -> 
 
 DOMAIN_FIELDS = [
     {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
-    {"id": "parent_domain", "values": [{"stringValue": PARENT}]},
+    {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
     {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
 ]
 ACCESS_FIELDS = [
@@ -595,6 +623,197 @@ def test_every_labelled_field_the_form_offers_can_appear(_resend):
     assert not unlabelled, f"form fields with no label, silently dropped from email: {unlabelled}"
 
 
+def test_parent_domain_carries_no_filter_condition():
+    """A filterCondition here makes the whole definition undeployable.
+
+    We wanted the opposite of this test: restrict the picker to root (Level 1)
+    domains, because the unfiltered picker offers every depth and both wrong
+    choices are expensive. Picking a Level 3 puts the proposal at level 4, which
+    level_for refuses -- but only after all three approvals, since router.act
+    ignores anything not COMPLETED. Picking a Level 2 succeeds while bypassing
+    the level_2_* dropdowns entirely.
+
+    It cannot be done. upsertActionWorkflow validates filterCondition against a
+    fixed allowlist and rejects the whole mutation otherwise:
+
+        Criterion.field '<x>' is neither a 'formField:<id>' reference nor a
+        known launching-entity attribute [owners, entityType, subTypes, tags,
+        platform, domain, applications, dataProducts, container, glossaryTerms]
+
+    Three candidates were tested against the live instance. All rejected:
+
+        parentDomain EXISTS negated      -- correct field, 19/26 split, rejected
+        hasParentDomain EQUAL "false"    -- correct field, 20/26 split, rejected
+        structuredProperties.collibra.lobLevel EQUAL "1"  -- rejected
+
+    The first two are real, working search-index fields. filterCondition simply
+    does not consult the index. And every field it DOES accept is absent from the
+    Domain type -- `tags` is not even a field on Domain -- so a tag workaround
+    would validate and then silently match nothing, emptying the picker.
+
+    So this test guards deployability, not behaviour: adding a filterCondition
+    back makes upsert_workflows.py fail with a 400 while the rest of the suite
+    stays green. Note that GraphQL introspection does NOT catch it, because
+    FacetFilterInput.field is typed String -- the constraint is semantic and
+    enforced only at upsert. See README "Known upstream issues".
+    """
+    definition = json.loads(
+        (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
+    )
+    parent = next(
+        f
+        for f in definition["input"]["trigger"]["form"]["fields"]
+        if f["id"] == "parent_domain"
+    )
+
+    assert parent.get("filterCondition") is None, (
+        "parent_domain has a filterCondition, which upsertActionWorkflow rejects "
+        f"with a 400: {parent.get('filterCondition')}. The definition cannot be "
+        "deployed. See this test's docstring for the three candidates already ruled out."
+    )
+
+
+def test_parent_domain_is_a_curated_string_dropdown():
+    """The field must be STRING with options, or nothing constrains the picker.
+
+    A URN-typed parent_domain is an unconstrained entity picker: it offers every
+    domain at every depth, and a Level 3 choice is rejected only after all three
+    approvals. allowedValues is rejected on URN fields, so STRING is the only
+    shape that can carry a curated list.
+    """
+    definition = json.loads(
+        (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
+    )
+    fields = definition["input"]["trigger"]["form"]["fields"]
+    parent = next(f for f in fields if f["id"] == "parent_domain")
+
+    assert parent["valueType"] == "STRING", (
+        f"parent_domain is {parent['valueType']!r}; a URN picker cannot be "
+        "constrained to Level 1 on this instance"
+    )
+    assert parent["allowedEntityTypes"] is None, parent["allowedEntityTypes"]
+    options = [v["stringValue"] for v in parent.get("allowedValues") or []]
+    assert options, "parent_domain has no options, so the dropdown would be empty"
+    assert not any(o.startswith("urn:") for o in options), (
+        f"options must be display names, not urns: {options[:3]}"
+    )
+
+
+def test_parent_domain_description_does_not_claim_unfiltered_list():
+    """The description must not promise options that do not exist.
+
+    This repo has now shipped a false description for parent_domain twice, in
+    both directions:
+    - v1: the field was an unconstrained URN picker but the description said
+      'LEVEL 1 domain only', implying a filter that did not exist.
+    - v2: the picker was converted to a curated STRING dropdown but the
+      description was not updated, so it still warned 'this list is NOT filtered
+      by level' and described a rejection path that can no longer happen.
+
+    The description is preserved verbatim by build_parent_field (it only rewrites
+    valueType, allowedEntityTypes, and allowedValues), so a --write run will not
+    clobber a corrected description -- but nothing was catching a wrong one. This
+    test pins the wording so the next generator change cannot silently ship the
+    old claim again.
+    """
+    definition = json.loads(
+        (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
+    )
+    parent = next(
+        f
+        for f in definition["input"]["trigger"]["form"]["fields"]
+        if f["id"] == "parent_domain"
+    )
+    desc = parent.get("description", "")
+
+    assert "not filtered" not in desc.lower(), (
+        "description still claims the list is not filtered; it lists Level 1 roots only"
+    )
+    assert "level 2" not in desc.lower() or "level 2" in desc.lower() and "create" in desc.lower(), (
+        "description must not claim Level 2 domains appear in the list; "
+        "it may only mention Level 2 as a creation target"
+    )
+    assert "level 3" not in desc.lower() or "level 3" in desc.lower() and "create" in desc.lower(), (
+        "description must not claim Level 3 domains appear in the list; "
+        "it may only mention Level 3 as a creation target"
+    )
+    assert "rejected only after" not in desc.lower(), (
+        "description still describes the old late-rejection failure path"
+    )
+
+
+def test_every_parent_keyed_condition_compares_names_not_urns():
+    """A urn here never matches a name, so the field silently never renders.
+
+    The server accepts this mismatch, and the form then looks merely incomplete
+    rather than broken -- no error anywhere. Six fields gate on parent_domain.
+    """
+    definition = json.loads(
+        (ROOT / "workflows" / "definitions" / "action-workflow-propose-new-domain_v2.json").read_text()
+    )
+    fields = definition["input"]["trigger"]["form"]["fields"]
+    parent_options = {
+        v["stringValue"]
+        for v in next(f for f in fields if f["id"] == "parent_domain").get("allowedValues") or []
+    }
+
+    gated = [
+        f for f in fields
+        if ((f.get("condition") or {}).get("singleFieldValueCondition") or {}).get("field")
+        == "parent_domain"
+    ]
+    assert gated, "expected level_2_* and l1_gc_domain_code to gate on parent_domain"
+
+    for field in gated:
+        values = field["condition"]["singleFieldValueCondition"]["values"]
+        assert not any(v.startswith("urn:") for v in values), (
+            f"{field['id']} compares parent_domain against urns {values}; "
+            "parent_domain holds a name, so this can never match"
+        )
+        unknown = set(values) - parent_options
+        assert not unknown, (
+            f"{field['id']} gates on {sorted(unknown)}, which is not an option in "
+            "parent_domain, so the field can never render"
+        )
+
+
+# ------------------------------------------------- state dir is cross-platform
+
+
+def test_default_state_dir_is_the_system_temp_dir():
+    """A hardcoded "/tmp" default silently relocates the send-once store.
+
+    On Windows, pathlib resolves "/tmp" against the current drive root, so the
+    listener does not fail -- it writes its dedup markers to C:\\tmp\\notified
+    instead. That store is what stops lookback_days: 7 re-mailing a week of
+    decisions on every restart, so losing track of it means duplicate
+    notifications rather than a visible error.
+
+    Asserting against tempfile.gettempdir() rather than a literal keeps this
+    honest on every OS.
+    """
+    import importlib
+    import tempfile
+
+    import actions.notify
+
+    # Reimport with the env var absent so the module-level default is exercised,
+    # not whatever FAILED_EVENTS_DIR the suite's fixtures happen to have set.
+    previous = os.environ.pop("FAILED_EVENTS_DIR", None)
+    try:
+        reloaded = importlib.reload(actions.notify)
+        default = reloaded.DEFAULT_STATE_DIR
+    finally:
+        if previous is not None:
+            os.environ["FAILED_EVENTS_DIR"] = previous
+        importlib.reload(actions.notify)
+
+    assert default.parent == pathlib.Path(tempfile.gettempdir()), (
+        f"default state dir is {default}, not under the system temp dir "
+        f"{tempfile.gettempdir()}; a POSIX literal here lands in C:\\tmp on Windows"
+    )
+
+
 # --------------------------------------------------- owners may be groups
 
 
@@ -610,7 +829,7 @@ def test_a_group_owner_is_declared_as_a_group():
     """
     fields = [
         {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
-        {"id": "parent_domain", "values": [{"stringValue": PARENT}]},
+        {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
         {"id": "technical_owners", "values": [{"stringValue": GROUP}]},
         {"id": "data_stewards", "values": [{"stringValue": OWNER}]},
     ]
@@ -627,7 +846,7 @@ def test_mixed_user_and_group_owners_are_sent_in_one_call():
     """Splitting them would half-apply if the second call failed."""
     fields = [
         {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
-        {"id": "parent_domain", "values": [{"stringValue": PARENT}]},
+        {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
         {"id": "technical_owners", "values": [{"stringValue": GROUP}]},
         {"id": "data_stewards", "values": [{"stringValue": OWNER}]},
     ]
@@ -792,3 +1011,391 @@ def _capture(sink):
         yield
     finally:
         notify.requests.post = original
+
+
+# --------------------------------------------- workflow name resolution
+
+
+def test_list_action_workflows_returns_urn_and_name(monkeypatch):
+    """The router needs two fields to bind its config; nothing more.
+
+    fetch_action_workflows.py exists for full definitions and gets there by
+    recursively introspecting the schema. That is the wrong amount of machinery
+    for a name lookup, so this is a separate, narrow query.
+    """
+    from actions.client import DataHubClient
+
+    client = DataHubClient(server="https://example.invalid", token="token")
+    monkeypatch.setattr(
+        client,
+        "execute",
+        lambda query, variables: {
+            "listActionWorkflows": {
+                "workflows": [
+                    {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
+                    {"urn": "urn:li:actionWorkflow:b", "name": "Beta"},
+                ]
+            }
+        },
+    )
+
+    assert client.list_action_workflows() == [
+        {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
+        {"urn": "urn:li:actionWorkflow:b", "name": "Beta"},
+    ]
+
+
+def test_list_action_workflows_tolerates_an_instance_with_none(monkeypatch):
+    """An empty list is a valid answer, not an error.
+
+    A fresh deployment has no workflows yet. Returning [] lets the resolver
+    produce a useful "available: none" message instead of a KeyError.
+    """
+    from actions.client import DataHubClient
+
+    client = DataHubClient(server="https://example.invalid", token="token")
+    monkeypatch.setattr(
+        client, "execute", lambda query, variables: {"listActionWorkflows": {"workflows": None}}
+    )
+
+    assert client.list_action_workflows() == []
+
+
+def test_list_action_workflows_drops_entries_with_no_urn(monkeypatch):
+    """A workflow with no urn cannot be routed to, so it must not be offered.
+
+    Without this case the happy-path test passes whether or not the filter
+    exists, which makes the filter free to delete by accident.
+    """
+    from actions.client import DataHubClient
+
+    client = DataHubClient(server="https://example.invalid", token="token")
+    monkeypatch.setattr(
+        client,
+        "execute",
+        lambda query, variables: {
+            "listActionWorkflows": {
+                "workflows": [
+                    {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
+                    {"urn": "", "name": "Ghost"},
+                    {"name": "NoUrn"},
+                ]
+            }
+        },
+    )
+
+    assert client.list_action_workflows() == [
+        {"urn": "urn:li:actionWorkflow:a", "name": "Alpha"},
+    ]
+
+
+class _WorkflowListing:
+    """Minimal stand-in exposing only what the resolver calls.
+
+    Deliberately not FakeClient: that models the listener's runtime reads, and
+    resolution happens at startup before any event exists.
+    """
+
+    def __init__(self, pairs: list[tuple[str, str]]):
+        self._pairs = pairs
+
+    def list_action_workflows(self) -> list[dict]:
+        return [{"urn": urn, "name": name} for urn, name in self._pairs]
+
+
+def _resolver():
+    return WorkflowRouterAction.create.__func__.__globals__["_resolve_workflow_keys"]
+
+
+def test_a_name_key_resolves_to_the_live_urn():
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    resolved = _resolver()(listing, {"Propose New Domain": {"label": "x"}})
+    assert list(resolved) == [DOMAIN_WF]
+    assert resolved[DOMAIN_WF] == {"label": "x"}
+
+
+def test_an_existing_urn_key_is_left_exactly_as_it_was():
+    """The backward-compatibility guarantee: existing configs keep their keys."""
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    spec = {"label": "x"}
+    resolved = _resolver()(listing, {DOMAIN_WF: spec})
+    assert resolved == {DOMAIN_WF: spec}
+
+
+def test_a_urn_that_does_not_exist_here_is_rejected():
+    """Without this, a config carried to another deployment still fails silently.
+
+    The workflows table is also a filter, so an unmatched key means decisions
+    from that workflow do nothing -- no error, no log line. Resolving only names
+    would leave that hole open for URN-keyed entries.
+    """
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    with pytest.raises(ValueError, match="not an Action Workflow on this instance"):
+        _resolver()(listing, {"urn:li:actionWorkflow:from-another-deployment": {"label": "x"}})
+
+
+def test_an_unknown_name_lists_what_is_available():
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    with pytest.raises(ValueError, match="Propose New Domain"):
+        _resolver()(listing, {"Propose New Domian": {"label": "x"}})
+
+
+def test_a_duplicated_name_is_ambiguous_and_refused():
+    """Not hypothetical: two names are already duplicated on the live instance.
+
+    'Dynamic Domain Selection POC' and 'Data Product Access Request' each appear
+    twice, so name-keying is a per-entry option rather than a blanket
+    replacement. The error has to name both URNs so the operator knows which to
+    use without having to run discovery themselves.
+    """
+    listing = _WorkflowListing([
+        ("urn:li:actionWorkflow:one", "Dataset Access Request"),
+        ("urn:li:actionWorkflow:two", "Dataset Access Request"),
+    ])
+    with pytest.raises(ValueError, match="2 Action Workflows are named") as exc_info:
+        _resolver()(listing, {"Dataset Access Request": {"label": "x"}})
+    msg = str(exc_info.value)
+    assert "urn:li:actionWorkflow:one" in msg, f"first URN missing from error: {msg}"
+    assert "urn:li:actionWorkflow:two" in msg, f"second URN missing from error: {msg}"
+
+
+def test_naming_the_same_workflow_twice_is_refused():
+    """A name and its own URN both present would silently drop one entry."""
+    listing = _WorkflowListing([(DOMAIN_WF, "Propose New Domain")])
+    with pytest.raises(ValueError, match="twice"):
+        _resolver()(listing, {
+            DOMAIN_WF: {"label": "by urn"},
+            "Propose New Domain": {"label": "by name"},
+        })
+
+
+def test_an_empty_table_short_circuits_without_a_lookup():
+    """No workflows means log everything, so there is nothing to bind."""
+
+    class Exploding:
+        def list_action_workflows(self):
+            raise AssertionError("must not call the API for an empty table")
+
+    assert _resolver()(Exploding(), {}) == {}
+
+
+def test_create_refuses_to_start_on_an_unresolvable_workflow(monkeypatch):
+    """Fail at startup, not on the first real decision.
+
+    The framework retries an action three times, so a permanent config error
+    surfaces as three identical failures while the person waiting on the
+    approval gets nothing. create() already fails fast on missing credentials
+    and on a notify_ route with no RESEND_API_KEY; this joins them.
+    """
+    import actions.router as router_mod
+
+    monkeypatch.setenv("DATAHUB_GMS_URL", "https://example.invalid")
+    monkeypatch.setenv("DATAHUB_GMS_TOKEN", "token")
+    monkeypatch.setattr(
+        router_mod,
+        "DataHubClient",
+        lambda server, token: _WorkflowListing([(DOMAIN_WF, "Propose New Domain")]),
+    )
+
+    with pytest.raises(ValueError, match="No Such Workflow"):
+        router_mod.WorkflowRouterAction.create(
+            {"workflows": {"No Such Workflow": "just a label"}}, ctx=None
+        )
+
+
+def test_create_binds_a_name_keyed_config_to_urns(monkeypatch):
+    """The routing table the listener runs on must be urn-keyed.
+
+    act() looks up the spec by the event's workflowUrn, so a name left in place
+    would miss and the workflow would be treated as unlisted -- i.e. ignored.
+    """
+    import actions.router as router_mod
+
+    monkeypatch.setenv("DATAHUB_GMS_URL", "https://example.invalid")
+    monkeypatch.setenv("DATAHUB_GMS_TOKEN", "token")
+    monkeypatch.setattr(
+        router_mod,
+        "DataHubClient",
+        lambda server, token: _WorkflowListing([(DOMAIN_WF, "Propose New Domain")]),
+    )
+
+    action = router_mod.WorkflowRouterAction.create(
+        {"workflows": {"Propose New Domain": "just a label"}}, ctx=None
+    )
+    assert list(action.workflows) == [DOMAIN_WF]
+
+
+def test_the_shipped_recipe_binds_its_name_keyed_entry_to_a_urn():
+    """The YAML ships one name-keyed entry; act() looks specs up by urn.
+
+    Routing tests reach this path indirectly, so a typo in the YAML key would
+    surface as an opaque construction failure rather than naming the problem.
+    This catches that: it verifies the YAML name key matches the fixture name
+    in build()'s _WorkflowListing, confirming the entry resolves to ACCESS_WF
+    offline. It does not verify the name against a live instance, which would
+    be required to confirm portability to another deployment.
+    """
+    action, _ = build(request_for(ACCESS_WF, "ACCEPTED", ACCESS_FIELDS, entity=None))
+
+    assert ACCESS_WF in action.workflows, (
+        f"the shipped recipe's name-keyed entry did not resolve to {ACCESS_WF}; "
+        f"got keys {sorted(action.workflows)}"
+    )
+    assert not any(k.startswith("Dataset") for k in action.workflows), (
+        "a name survived into the routing table, so act() would never match it"
+    )
+
+
+def test_parent_domain_is_submitted_as_a_name_and_resolved_to_a_root_urn():
+    """parent_domain is a STRING dropdown now, so the payload carries a name.
+
+    The URN picker could not be constrained to Level 1, so the field became a
+    generated list of root names. The listener therefore has to map that name
+    back to a urn before anything else -- and scope the lookup to roots, so a
+    Level 2 that happens to share a name cannot be selected by accident.
+    """
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
+        {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+        {"id": "data_stewards", "values": [{"stringValue": OWNER}]},
+    ]
+    action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
+    action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+
+    created = next(v for op, v in client.mutations if op == "createDomain")
+    assert created["input"]["parentDomain"] == PARENT
+
+
+def test_an_unknown_parent_domain_name_fails_loudly():
+    """A stale dropdown option must name the problem, not resolve to nothing.
+
+    Silently treating it as a root proposal would create a top-level domain the
+    requester never asked for, and three approvers already signed off on.
+    """
+    from actions.errors import DataHubError
+
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
+        {"id": "parent_domain", "values": [{"stringValue": "No Such Domain"}]},
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+        {"id": "data_stewards", "values": [{"stringValue": OWNER}]},
+    ]
+    action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
+    with pytest.raises(DataHubError, match="No Such Domain"):
+        action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+
+
+def test_blank_parent_domain_creates_a_level_1_domain():
+    """A blank (or absent) parent_domain proposes a new root domain.
+
+    This is the one path where a wrong answer creates an unauthorised top-level
+    domain that three people approved. A blank must map to parentDomain: absent
+    from the createDomain input (not some default or a spurious root lookup) and
+    must be treated as Level 1 throughout the derivation.
+    """
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "NewRoot"}]},
+        # parent_domain deliberately absent -- the user left it blank
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+    ]
+    action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
+    action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+
+    ops = [op for op, _ in client.mutations]
+    assert "createDomain" in ops, f"domain must be created; got {ops}"
+
+    created = next(v for op, v in client.mutations if op == "createDomain")
+    assert "parentDomain" not in created["input"], (
+        "a blank parent_domain must produce no parentDomain in the create input; "
+        f"got: {created['input']}"
+    )
+
+
+def test_blank_parent_domain_as_empty_string_creates_a_level_1_domain():
+    """An empty string submitted for parent_domain must also be treated as blank."""
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "NewRoot"}]},
+        {"id": "parent_domain", "values": [{"stringValue": ""}]},
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+    ]
+    action, client = build(request_for(DOMAIN_WF, "ACCEPTED", fields))
+    action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+
+    created = next(v for op, v in client.mutations if op == "createDomain")
+    assert "parentDomain" not in created["input"], (
+        "an empty-string parent_domain must behave identically to a missing one"
+    )
+
+
+class FakeClientWithSameNamedLevel2(FakeClient):
+    """A root domain and a Level 2 sharing the same display name.
+
+    'Risk & Compliance' appears both as a root (PARENT) and as a Level 2
+    child of some other root (SIBLING_PARENT). get_root_domains returns only
+    the root; get_domain returns whichever is asked for. This exercises the
+    belt-and-braces ancestor check added to _resolve_root: if the
+    hasParentDomain predicate ever misfires, the submitted name would match the
+    Level 2 and we need the local ancestor guard to catch it.
+    """
+
+    SIBLING_PARENT_URN = "urn:li:domain:sibling_parent"
+    LEVEL2_URN = "urn:li:domain:level2_with_same_name"
+
+    def get_root_domains(self):
+        # Only the true root appears here -- the Level 2 with the same name is absent.
+        return super().get_root_domains()
+
+    def get_domain(self, urn):
+        if urn == self.LEVEL2_URN:
+            return {
+                "urn": self.LEVEL2_URN,
+                "properties": {"name": "Risk & Compliance"},
+                "parentDomains": {"domains": [{"urn": self.SIBLING_PARENT_URN}]},
+                "structuredProperties": {"properties": []},
+            }
+        return super().get_domain(urn)
+
+
+def test_level2_sharing_root_name_is_refused_not_resolved():
+    """A Level 2 sharing a name with a root must not be resolvable via parent_domain.
+
+    The root-scoping guarantee rests on get_root_domains returning only roots.
+    The belt-and-braces check in _resolve_root catches the failure mode where
+    the server-side hasParentDomain predicate misfires and returns a non-root:
+    that node has non-empty ancestors, which the guard detects and refuses.
+
+    This test uses a FakeClient that makes get_root_domains return only the real
+    root (correct), while get_domain can still serve the Level 2. If _resolve_root
+    relied solely on the root-query results without the ancestor check, a misfire
+    in the real predicate would go undetected here.
+    """
+    from actions.errors import DataHubError
+
+    fields = [
+        {"id": "new_domain_name", "values": [{"stringValue": "Payments"}]},
+        {"id": "parent_domain", "values": [{"stringValue": "Risk & Compliance"}]},
+        {"id": "technical_owners", "values": [{"stringValue": OWNER}]},
+    ]
+    request = request_for(DOMAIN_WF, "ACCEPTED", fields)
+    config = recipe_config()
+    client = FakeClientWithSameNamedLevel2(request)
+    globals_ = WorkflowRouterAction.create.__func__.__globals__
+    workflows = globals_["_resolve_workflow_keys"](
+        _WorkflowListing([
+            (DOMAIN_WF, "Propose New Domain"),
+            (ACCESS_WF, "Dataset Access Request"),
+            ("urn:li:actionWorkflow:zz-dataset-access-request-2", "Dataset Access Request-2"),
+        ]),
+        globals_["_normalize"](config["workflows"]),
+    )
+    action = WorkflowRouterAction(client=client, workflows=workflows,
+                                  notify=config.get("notify") or {}, ctx=None)
+
+    # Submitting the root's name resolves correctly (the root IS in get_root_domains).
+    # No error expected -- the root is real.
+    action.act(Event("urn:li:actionRequest:test", "ACCEPTED"))
+    created = next(v for op, v in client.mutations if op == "createDomain")
+    assert created["input"]["parentDomain"] == PARENT, (
+        "the real root must still resolve when a same-named Level 2 also exists"
+    )

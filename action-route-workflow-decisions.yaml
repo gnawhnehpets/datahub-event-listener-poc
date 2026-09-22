@@ -49,12 +49,31 @@ source:
     # Raise it if the listener may be down for days; the only cost of a larger
     # window is a slower startup, since replayed work is suppressed either way.
     lookback_days: 7
-    # With a consumer_id the source tracks an offset, so a restart resumes
-    # rather than skipping. The cursor commits only on SIGINT -- stop this with
-    # Ctrl+C, never a plain `kill`.
-    # consumer_id is omitted because acryl-datahub-actions 1.7.0.7 ignores it:
-    # the offset cursor is keyed on the PIPELINE NAME instead, as
-    # urn:li:dataHubAction:<name>-<topic>. Setting it changes nothing.
+    # The source tracks an offset, so a restart resumes rather than skipping.
+    # The cursor commits only on SIGINT -- stop this with Ctrl+C, never a plain
+    # `kill`.
+    #
+    # consumer_id is omitted because acryl-datahub-actions 1.7.0.7 declares the
+    # field and never reads it. Confirmed in the installed source, not just by
+    # observation -- in
+    # datahub_actions/plugin/source/acryl/datahub_cloud_event_source.py:
+    #
+    #   consumer_id: Optional[str] = Field(
+    #       default=None, description="Used to store offset for the consumer."
+    #   )
+    #
+    # ...but `source_config.consumer_id` appears nowhere in the package. Line ~94
+    # derives the identity from the pipeline name instead:
+    #
+    #   self.base_consumer_id = DataHubEventSource._get_pipeline_urn(
+    #       self.ctx.pipeline_name
+    #   )
+    #
+    # and each consumer is then keyed f"{base_consumer_id}-{topic}", i.e.
+    # urn:li:dataHubAction:<pipeline-name>-<topic>. So the field is dead config:
+    # setting it is silently ignored, and RENAMING THE PIPELINE is the only way
+    # to change the offset identity. Raised with Acryl; see README "Known
+    # upstream issues".
     #
     # That matters because a cursor can end up past the events you are waiting
     # for, and the listener then receives NOTHING while looking perfectly
@@ -89,9 +108,23 @@ action:
   config:
     # BOTH a filter and a naming table -- a decision from a workflow not listed
     # here is ignored. Comment the whole block out to log every workflow, which
-    # is what you want before you know the URNs.
+    # is what you want before you know what exists.
     #
-    # Discover them with:
+    # Keys may be a workflow URN or a workflow NAME. Names are resolved to URNs
+    # at startup and are the portable choice: a URN created through the DataHub
+    # UI is a per-instance GUID, so a URN-keyed entry does not survive being
+    # pointed at another deployment. URNs this repo deploys itself are slugs we
+    # choose, so those stay URN-keyed below.
+    #
+    # Every key is checked at startup, name or URN. An unknown or ambiguous key
+    # stops the listener rather than being ignored -- being ignored is silent,
+    # and that is the failure worth refusing.
+    #
+    # Two names are currently duplicated on the live instance -- 'Dynamic Domain
+    # Selection POC' and 'Data Product Access Request' each appear twice -- so
+    # name-keying is not available for every entry; use the URN for those.
+    #
+    # Discover both with:
     #   .venv/bin/python workflows/definitions/fetch_action_workflows.py
     workflows:
       # Long form: an action per outcome. Unset outcomes default to `log`.
@@ -117,7 +150,7 @@ action:
             data_stewards: "Data stewards"
             data_governance_reviewers: "Data governance reviewers"
             business_justification: "Business justification"
-      "urn:li:actionWorkflow:7110b19c-45b9-4450-b8bb-ba47d9f522ba": &dataset_access
+      "Dataset Access Request": &dataset_access
         label: Dataset Access Request
         accepted: notify_approval
         rejected: notify_rejection
@@ -198,7 +231,12 @@ action:
 options:
   retry_count: 3
   failure_mode: CONTINUE
-  failed_events_dir: ${FAILED_EVENTS_DIR:-/var/lib/actions}/route
+  # The fallback is a repo-relative path, not /var/lib/actions. That old default
+  # was unwritable on every OS -- the pipeline died at startup with "Please check
+  # your file system permissions" -- and on Windows a POSIX absolute path does
+  # not error at all, it just resolves to C:\var\lib\actions where nobody looks.
+  # Set FAILED_EVENTS_DIR in .env and this fallback never applies.
+  failed_events_dir: ${FAILED_EVENTS_DIR:-./.state}/route
 
 datahub:
   server: ${DATAHUB_GMS_URL}

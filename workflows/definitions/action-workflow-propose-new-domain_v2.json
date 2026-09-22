@@ -74,15 +74,103 @@
           {
             "id": "parent_domain",
             "name": "Parent domain",
-            "description": "The domain this one nests under. Leave blank to propose a root (Level 1) domain. Pick a Level 1 domain to create a Level 2, or a Level 2 domain to create a Level 3. The full hierarchy is derived from this one choice, so a mismatched pair is not possible.",
-            "valueType": "URN",
-            "allowedEntityTypes": [
-              "DOMAIN"
+            "description": "Lists Level 1 (root) domains only. Leave blank to propose a new Level 1 domain. Pick a Level 1 to create a Level 2 beneath it. To create a Level 3, pick its Level 1 here and then choose the Level 2 from the dropdown that appears.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "Capital Markets Technology"
+              },
+              {
+                "stringValue": "Corporate Shared Services"
+              },
+              {
+                "stringValue": "Data Contracts"
+              },
+              {
+                "stringValue": "E-Commerce"
+              },
+              {
+                "stringValue": "Enterprise Risk Management"
+              },
+              {
+                "stringValue": "Infra & Architecture"
+              },
+              {
+                "stringValue": "KUMARTEST"
+              },
+              {
+                "stringValue": "Latin America Banking Services"
+              },
+              {
+                "stringValue": "Line of Business"
+              },
+              {
+                "stringValue": "Manju_Test"
+              },
+              {
+                "stringValue": "Marketing"
+              },
+              {
+                "stringValue": "Mexico Retail Banking"
+              },
+              {
+                "stringValue": "POC Patent Domain"
+              },
+              {
+                "stringValue": "POC_Parent Domian"
+              },
+              {
+                "stringValue": "Retail Banking"
+              },
+              {
+                "stringValue": "Retail Banking Operations"
+              },
+              {
+                "stringValue": "Risk & Compliance"
+              },
+              {
+                "stringValue": "Universal Banking"
+              },
+              {
+                "stringValue": "Vehicle Financing Solutions"
+              },
+              {
+                "stringValue": "test_urn"
+              }
             ],
-            "allowedValues": null,
             "cardinality": "SINGLE",
             "required": false,
             "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "level_2_data_contracts",
+            "name": "Level 2 domain under Data Contracts",
+            "description": "Optional. Narrow the parent to a domain directly beneath Data Contracts. Leave blank to propose directly under Data Contracts.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "TEST_Data Contract"
+              },
+              {
+                "stringValue": "Test2"
+              }
+            ],
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": {
+              "type": "SINGLE_FIELD_VALUE",
+              "singleFieldValueCondition": {
+                "field": "parent_domain",
+                "values": [
+                  "Data Contracts"
+                ],
+                "condition": "EQUAL",
+                "negated": false
+              }
+            },
             "valuesSource": null
           },
           {
@@ -103,7 +191,7 @@
               "singleFieldValueCondition": {
                 "field": "parent_domain",
                 "values": [
-                  "urn:li:domain:sample_data_d4f24004-fb54-4e3c-8dea-2b7e209230b0"
+                  "E-Commerce"
                 ],
                 "condition": "EQUAL",
                 "negated": false
@@ -129,7 +217,7 @@
               "singleFieldValueCondition": {
                 "field": "parent_domain",
                 "values": [
-                  "urn:li:domain:LOB"
+                  "Line of Business"
                 ],
                 "condition": "EQUAL",
                 "negated": false
@@ -161,7 +249,7 @@
               "singleFieldValueCondition": {
                 "field": "parent_domain",
                 "values": [
-                  "urn:li:domain:9b9860d7-56f8-4a06-b742-0d3bc7d7c9d4"
+                  "POC_Parent Domian"
                 ],
                 "condition": "EQUAL",
                 "negated": false
@@ -193,7 +281,7 @@
               "singleFieldValueCondition": {
                 "field": "parent_domain",
                 "values": [
-                  "urn:li:domain:collibra_lob_risk_and_compliance"
+                  "Risk & Compliance"
                 ],
                 "condition": "EQUAL",
                 "negated": false
@@ -228,10 +316,7 @@
               "singleFieldValueCondition": {
                 "field": "parent_domain",
                 "values": [
-                  "urn:li:domain:collibra_lob_finance",
-                  "urn:li:domain:collibra_lob_operations",
-                  "urn:li:domain:collibra_lob_risk_and_compliance",
-                  "urn:li:domain:collibra_lob_testing"
+                  "Risk & Compliance"
                 ],
                 "condition": "EQUAL",
                 "negated": false

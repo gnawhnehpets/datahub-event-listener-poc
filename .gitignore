@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 .superpowers/
 _boneyard
+
+# Fallback failed-events / notified-marker dir when FAILED_EVENTS_DIR is unset.
+.state/

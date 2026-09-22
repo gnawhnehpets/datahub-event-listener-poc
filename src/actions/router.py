@@ -72,15 +72,26 @@ class WorkflowRouterAction(Action):
     Config::
 
         workflows:
-          "urn:li:actionWorkflow:propose-new-domain":
+          "urn:li:actionWorkflow:propose-new-domain":   # URN this repo chose
             label: Propose New Domain
             accepted: create_domain      # default: log
             rejected: log
-          "urn:li:actionWorkflow:other": Some Other Workflow   # short form: log both
+          "Dataset Access Request": log  # name-keyed -- resolved at startup
+
+    Keys may be a workflow **URN** or a workflow **name**. Names are resolved to
+    live URNs at startup. Names are the portable choice: a workflow created
+    through the DataHub UI has a per-instance GUID, so a URN-keyed entry does
+    not survive being pointed at another deployment. A URN this repo deploys
+    itself is a slug we choose, so it is already portable and stays URN-keyed.
+
+    Every key is validated at startup, name or URN. An unknown or ambiguous key
+    refuses to start rather than being ignored -- an unmatched key means
+    decisions from that workflow are silently ignored, with no error anywhere,
+    which is the failure worth refusing.
 
     ``workflows`` is both a filter and a naming table -- a decision from a
     workflow not listed is ignored. Omit it to log every workflow, which is what
-    you want before you know the URNs.
+    you want before you know what exists.
 
     ``server``/``token`` override DATAHUB_GMS_URL / DATAHUB_GMS_TOKEN. Prefer the
     environment; a token in a committed YAML is a leak.
@@ -100,7 +111,12 @@ class WorkflowRouterAction(Action):
                 "in the environment, or 'server' and 'token' in the action config"
             )
 
-        workflows = _normalize(config.get("workflows") or {})
+        # Hoisted out of the cls(...) return below so resolution can reuse it.
+        client = DataHubClient(server=server, token=token)
+
+        # Before the email validation, so those messages report resolved URNs
+        # rather than a mix of names and URNs.
+        workflows = _resolve_workflow_keys(client, _normalize(config.get("workflows") or {}))
         notify = config.get("notify") or {}
         # Costs one read per PENDING event, for every workflow on the instance,
         # since the event does not say which workflow it belongs to. Off makes
@@ -136,7 +152,7 @@ class WorkflowRouterAction(Action):
                         f"the workflow's own notify block"
                     )
 
-        return cls(client=DataHubClient(server=server, token=token),
+        return cls(client=client,
                    workflows=workflows, notify=notify, ctx=ctx,
                    log_progress=log_progress)
 
@@ -375,3 +391,76 @@ def _normalize(raw: dict) -> dict:
                 )
         out[key] = entry
     return out
+
+
+_WORKFLOW_URN_PREFIX = "urn:li:actionWorkflow:"
+
+
+def _resolve_workflow_keys(client: DataHubClient, workflows: dict) -> dict:
+    """Bind every configured key to a live Action Workflow URN.
+
+    A key already shaped like a URN is validated and kept as-is; anything else is
+    a workflow NAME and is resolved. Both directions fail fast, because the
+    ``workflows`` table is also a FILTER -- a key matching nothing means
+    decisions from that workflow are silently ignored, with no error anywhere.
+    That silence is the whole reason this function exists, so it must not be
+    reintroduced as a warning.
+
+    URN keys are validated too, not just names. Resolving only names would leave
+    the hole open for any config carried from another deployment.
+
+    An empty table means "log every workflow", so it short-circuits rather than
+    spending a call to bind nothing.
+    """
+    if not workflows:
+        return workflows
+
+    live = client.list_action_workflows()
+    urns = {w["urn"] for w in live}
+
+    by_name: dict[str, list[str]] = {}
+    for workflow in live:
+        name = (workflow.get("name") or "").strip()
+        if name:
+            by_name.setdefault(name, []).append(workflow["urn"])
+
+    resolved: dict[str, dict] = {}
+    for key, spec in workflows.items():
+        if key.startswith(_WORKFLOW_URN_PREFIX):
+            if key not in urns:
+                raise ValueError(
+                    f"{key} is not an Action Workflow on this instance. "
+                    f"Check for stray whitespace inside the URN (e.g. "
+                    f"'urn:li:actionWorkflow: 1fc9...' with an internal space). "
+                    f"If this config came from another deployment, key the entry "
+                    f"by name instead."
+                )
+            target = key
+        else:
+            matches = by_name.get(key) or []
+            if not matches:
+                available = ", ".join(sorted(by_name)) or "none"
+                raise ValueError(
+                    f"{key!r} is not an Action Workflow on this instance "
+                    f"(available: {available}). Check the name in "
+                    f"action-route-workflow-decisions.yaml, or use the URN directly."
+                )
+            if len(matches) > 1:
+                raise ValueError(
+                    f"{len(matches)} Action Workflows are named {key!r} "
+                    f"({', '.join(sorted(matches))}). Use the URN directly for "
+                    f"this entry."
+                )
+            target = matches[0]
+            logger.info("Resolved workflow %r -> %s", key, target)
+
+        if target in resolved:
+            # Two keys naming one workflow: dict assignment would drop one spec
+            # and the operator would never know which routing won.
+            raise ValueError(
+                f"{target} is configured twice, once by URN and once by name. "
+                f"Keep one entry."
+            )
+        resolved[target] = spec
+
+    return resolved

@@ -31,6 +31,7 @@ import logging
 import os
 import pathlib
 import re
+import tempfile
 from typing import Iterable
 
 import requests
@@ -52,7 +53,14 @@ ENDPOINT = "https://api.resend.com/emails"
 # So each (request, outcome) is marked once it has been sent, and never sent
 # twice. The marker is a file rather than an in-process set because the thing
 # being defended against is precisely a restart.
-DEFAULT_STATE_DIR = pathlib.Path(os.environ.get("FAILED_EVENTS_DIR", "/tmp")) / "notified"
+#
+# The fallback is tempfile.gettempdir() rather than a literal "/tmp": on Windows
+# pathlib resolves "/tmp" against the current drive root, so the listener would
+# not fail -- it would write these markers to C:\tmp and lose the replay guard
+# silently. gettempdir() is "/tmp" on Linux anyway, so this changes nothing there.
+DEFAULT_STATE_DIR = (
+    pathlib.Path(os.environ.get("FAILED_EVENTS_DIR") or tempfile.gettempdir()) / "notified"
+)
 NO_REASON = "No reason was recorded."
 
 # Tags that imply a line break become a space; every other tag is dropped.
