@@ -1,0 +1,117 @@
+{
+  "input": {
+    "urn": "urn:li:actionWorkflow:7110b19c-45b9-4450-b8bb-ba47d9f522ba",
+    "name": "Dataset Access Request",
+    "category": "ACCESS",
+    "customCategory": null,
+    "description": "Request access to sensitive datasets",
+    "trigger": {
+      "type": "FORM_SUBMITTED",
+      "form": {
+        "entrypoints": [
+          {
+            "type": "HOME",
+            "label": "Request Dataset Access",
+            "filter": null
+          },
+          {
+            "type": "ENTITY_PROFILE",
+            "label": "Request Access",
+            "filter": null
+          }
+        ],
+        "entityTypes": [
+          "DATASET"
+        ],
+        "excludedDefaultFields": null,
+        "fields": [
+          {
+            "id": "business_justification",
+            "name": "Business Justification",
+            "description": "Please explain why you need access to this dataset",
+            "valueType": "RICH_TEXT",
+            "allowedEntityTypes": null,
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": true,
+            "condition": null,
+            "valuesSource": null,
+            "validation": null,
+            "dynamicSource": null,
+            "filterCondition": null
+          },
+          {
+            "id": "access_duration",
+            "name": "Access Duration",
+            "description": "How long do you need access?",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": [
+              {
+                "stringValue": "30_DAYS"
+              },
+              {
+                "stringValue": "90_DAYS"
+              },
+              {
+                "stringValue": "PERMANENT"
+              }
+            ],
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": null,
+            "valuesSource": null,
+            "validation": null,
+            "dynamicSource": null,
+            "filterCondition": null
+          },
+          {
+            "id": "permanent_access_justification",
+            "name": "Permanent Access Justification",
+            "description": "Since you've requested permanent access, please provide additional justification for why this is necessary",
+            "valueType": "RICH_TEXT",
+            "allowedEntityTypes": null,
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": true,
+            "condition": {
+              "type": "SINGLE_FIELD_VALUE",
+              "singleFieldValueCondition": {
+                "field": "access_duration",
+                "values": [
+                  "PERMANENT"
+                ],
+                "condition": "EQUAL",
+                "negated": false
+              }
+            },
+            "valuesSource": null,
+            "validation": null,
+            "dynamicSource": null
+          }
+        ]
+      }
+    },
+    "steps": [
+      {
+        "id": "data_steward_review",
+        "type": "APPROVAL",
+        "description": "Data steward review and approval",
+        "condition": null,
+        "actors": {
+          "userUrns": [],
+          "groupUrns": [],
+          "roleUrns": [],
+          "dynamicAssignment": {
+            "type": "ENTITY_DOMAIN_OWNERS",
+            "ownershipTypeUrns": [
+              "urn:li:ownershipType:__system__data_steward"
+            ]
+          },
+          "dynamicSource": null
+        },
+        "quorum": null
+      }
+    ]
+  }
+}
