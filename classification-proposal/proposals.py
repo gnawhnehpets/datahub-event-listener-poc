@@ -110,6 +110,10 @@ def generate_proposals(
 
     Duplicate (column, tag) pairs are not deduped -- multiple proposals on one
     attribute is a requirement.
+
+    Constraint: every key in `asset_columns` must exist in the `ASSETS` global.
+    An unknown key raises `KeyError` because URNs are derived from `ASSETS` at
+    draw time. Callers are responsible for passing only keys that appear there.
     """
     names = sorted(asset_columns)
     out = [_draw(rng, ASSETS[name], None) for name in names]

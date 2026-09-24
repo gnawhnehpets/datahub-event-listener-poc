@@ -55,7 +55,7 @@ def token_expiry(token: str) -> dt.datetime:
         payload += "=" * (-len(payload) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload))
         return dt.datetime.fromtimestamp(claims["exp"], dt.timezone.utc)
-    except (IndexError, KeyError, TypeError, ValueError, binascii.Error) as exc:
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, binascii.Error) as exc:
         raise CredentialError(f"could not read exp claim from token: {exc}") from exc
 
 
@@ -76,12 +76,22 @@ def load_credentials(
         raise CredentialError(f"{resolved} is missing gms.server or gms.token: {exc}") from exc
     if not token:
         raise CredentialError(f"{resolved} has an empty gms.token")
+    if not isinstance(token, str):
+        raise CredentialError(f"{resolved} gms.token must be a string, got {type(token).__name__}")
+    if not server.startswith("https://"):
+        raise CredentialError(
+            f"{resolved} gms.server must use https:// to protect the Bearer token; got {server!r}"
+        )
 
     expires = token_expiry(token)
     moment = now or dt.datetime.now(dt.timezone.utc)
-    if expires <= moment:
+    # Reject tokens within 5 minutes of expiry. A token with seconds left will
+    # pass the check here but then 401 on the first proposal mid-batch.
+    skew = dt.timedelta(minutes=5)
+    if expires <= moment + skew:
         raise CredentialError(
-            f"token in {resolved} expired {expires:%Y-%m-%d %H:%M:%S UTC}. "
+            f"token in {resolved} expired or expires within 5 minutes "
+            f"({expires:%Y-%m-%d %H:%M:%S UTC}). "
             f"Generate a new Personal Access Token in DataHub "
             f"(Settings -> Access Tokens) and replace gms.token."
         )
@@ -107,6 +117,38 @@ mutation proposeTags($input: ProposeTagsInput!) {
 
 class DataHubError(Exception):
     """A GraphQL call failed or returned errors."""
+
+
+def _build_payload(proposal: Proposal) -> dict:
+    """Construct the GraphQL input dict for a single tag proposal.
+
+    Separated from the I/O path so the payload logic is testable without a
+    network call. The sub-resource fields are what determine whether DataHub
+    files a column-level or asset-level proposal — an inverted condition here
+    would silently file the wrong kind against a live tenant.
+    """
+    payload: dict = {
+        "resourceUrn": proposal.resource_urn,
+        "tagUrns": [proposal.tag_urn],
+        "description": proposal.note,
+        "origin": "INFERRED",
+        # inferenceMetadata is the correct place for the native confidence
+        # bucket per the GraphQL schema. However, DataHub v2.1.3 silently
+        # drops it: the server accepts the mutation without error but stores
+        # origin=MANUAL and omits inferenceMetadata entirely. The code is
+        # correct and should start working on a version that honours the
+        # field. The confidence score still lands correctly in `description`
+        # (proposal.note), which is the only surviving path for now.
+        "inferenceMetadata": {
+            "version": 1,
+            "confidenceLevel": proposal.confidence_level,
+        },
+    }
+    # Omitting both sub-resource fields is what makes this asset-level.
+    if proposal.sub_resource is not None:
+        payload["subResourceType"] = "DATASET_FIELD"
+        payload["subResource"] = proposal.sub_resource
+    return payload
 
 
 class DataHubClient:
@@ -145,16 +187,24 @@ class DataHubClient:
         if body.get("errors"):
             raise DataHubError("; ".join(e.get("message", str(e)) for e in body["errors"]))
         if "data" not in body:
-            raise DataHubError(f"malformed response: neither data nor errors present: {body}")
+            raise DataHubError(
+                f"malformed response: neither data nor errors present: {str(body)[:300]}"
+            )
         return body["data"]
 
     def fetch_columns(self, dataset_urn: str) -> list[str]:
         """Live fieldPaths, so the script does not drift as the POC data changes."""
         data = self._execute(_COLUMNS_QUERY, {"urn": dataset_urn})
         dataset = data.get("dataset")
-        if not dataset or not dataset.get("schemaMetadata"):
-            raise DataHubError(f"no schema found for {dataset_urn}")
-        return [f["fieldPath"] for f in dataset["schemaMetadata"]["fields"]]
+        if not dataset:
+            raise DataHubError(f"dataset not found: {dataset_urn}")
+        if not dataset.get("schemaMetadata"):
+            raise DataHubError(f"dataset exists but has no schema: {dataset_urn}")
+        fields = dataset["schemaMetadata"].get("fields") or []
+        try:
+            return [f["fieldPath"] for f in fields]
+        except (KeyError, TypeError) as exc:
+            raise DataHubError(f"unexpected fields shape for {dataset_urn}: {exc}") from exc
 
     def propose_tag(self, proposal: Proposal) -> str:
         """File one proposal. Returns the created actionRequest URN.
@@ -163,26 +213,9 @@ class DataHubClient:
         confidence bucket goes. The precise score travels in `description`,
         documented by the schema as "also called proposalNote".
         """
-        payload: dict = {
-            "resourceUrn": proposal.resource_urn,
-            "tagUrns": [proposal.tag_urn],
-            "description": proposal.note,
-            "origin": "INFERRED",
-            # inferenceMetadata is the correct place for the native confidence
-            # bucket per the GraphQL schema. However, DataHub v2.1.3 silently
-            # drops it: the server accepts the mutation without error but stores
-            # origin=MANUAL and omits inferenceMetadata entirely. The code is
-            # correct and should start working on a version that honours the
-            # field. The confidence score still lands correctly in `description`
-            # (proposal.note), which is the only surviving path for now.
-            "inferenceMetadata": {
-                "version": 1,
-                "confidenceLevel": proposal.confidence_level,
-            },
-        }
-        # Omitting both sub-resource fields is what makes this asset-level.
-        if proposal.sub_resource is not None:
-            payload["subResourceType"] = "DATASET_FIELD"
-            payload["subResource"] = proposal.sub_resource
-
-        return self._execute(_PROPOSE_TAGS, {"input": payload})["proposeTags"]
+        payload = _build_payload(proposal)
+        data = self._execute(_PROPOSE_TAGS, {"input": payload})
+        urn = (data or {}).get("proposeTags")
+        if not urn:
+            raise DataHubError(f"proposeTags returned no URN: {str(data)[:300]}")
+        return urn

@@ -19,8 +19,6 @@ import sys
 from datahub_client import CredentialError, DataHubClient, DataHubError, load_credentials
 from proposals import ASSETS, generate_proposals
 
-logger = logging.getLogger("propose")
-
 
 def _print_urns(created: list[tuple[str, str]]) -> None:
     """Print the actionRequest URN block, or nothing if the list is empty."""
@@ -64,17 +62,17 @@ def main(argv: list[str] | None = None) -> int:
     elif args.asset in ASSETS:
         chosen = [args.asset]
     else:
-        print(f"unknown asset {args.asset!r}. Known: {', '.join(sorted(ASSETS))}, all")
+        print(f"unknown asset {args.asset!r}. Known: {', '.join(sorted(ASSETS))}, all", file=sys.stderr)
         return 1
 
     if args.count < 0:
-        print("--count must be zero or greater")
+        print("--count must be zero or greater", file=sys.stderr)
         return 1
 
     try:
         creds = load_credentials()
     except CredentialError as exc:
-        print(f"credentials: {exc}")
+        print(f"credentials: {exc}", file=sys.stderr)
         return 1
 
     client = DataHubClient(creds)
@@ -82,12 +80,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         asset_columns = {name: client.fetch_columns(ASSETS[name]) for name in chosen}
     except DataHubError as exc:
-        print(f"could not read schemas: {exc}")
+        print(f"could not read schemas: {exc}", file=sys.stderr)
         return 1
 
     empty = [name for name, cols in asset_columns.items() if not cols]
     if empty:
-        print(f"no columns found for: {', '.join(empty)}")
+        print(f"no columns found for: {', '.join(empty)}", file=sys.stderr)
         return 1
 
     rng = random.Random(args.seed)
@@ -102,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
 
     created: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
+    interrupted = False
+    unexpected_exc: BaseException | None = None
     try:
         for proposal in proposals:
             target = proposal.sub_resource or "<asset-level>"
@@ -123,14 +123,31 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  OK    {label}  {proposal.note}")
     except KeyboardInterrupt:
         # Print whatever we collected before the interrupt so the caller has
-        # the URN list needed to reject a partial batch. A raw traceback is not
-        # useful here; the URNs are.
-        print(f"\n[interrupted] {len(created)} created, {len(failed)} failed before Ctrl-C")
+        # the URN list needed to reject a partial batch.
+        interrupted = True
+    except BaseException as exc:
+        # An unexpected exception (e.g. KeyError from a server response shape
+        # we did not anticipate) must not silently lose the URNs for proposals
+        # that were already filed. We catch, record, and re-raise after printing.
+        unexpected_exc = exc
+    finally:
+        # The URN block prints unconditionally so no filed proposal is ever an
+        # unfindable orphan, regardless of what cut the loop short.
+        if interrupted:
+            print(f"\n[interrupted] {len(created)} created, {len(failed)} failed before Ctrl-C")
+        elif unexpected_exc is not None:
+            print(
+                f"\n[error] {len(created)} created, {len(failed)} failed before unexpected error",
+                file=sys.stderr,
+            )
         _print_urns(created)
+
+    if unexpected_exc is not None:
+        raise unexpected_exc
+    if interrupted:
         return 1
 
     print(f"\n{len(created)} created, {len(failed)} failed")
-    _print_urns(created)
     # Exit 1 whenever any proposal failed, even if others succeeded.
     # "Per-proposal failures are never fatal" means do not abort mid-batch;
     # it does not mean hide failures from the caller. A script checking

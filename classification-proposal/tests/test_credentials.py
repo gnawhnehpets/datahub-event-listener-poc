@@ -78,6 +78,71 @@ def test_expired_token_is_rejected_with_its_date(tmp_path: pathlib.Path) -> None
     assert "2026-09-02" in str(err.value)
 
 
+def test_token_expiring_within_5_minutes_is_rejected(tmp_path: pathlib.Path) -> None:
+    """A token with under 5 minutes left passes expiry but 401s on the first proposal.
+
+    Reject it up front with the same clear message rather than failing mid-batch.
+    """
+    now = dt.datetime(2026, 9, 23, 12, 0, 0, tzinfo=dt.timezone.utc)
+    # Expires 4 minutes from now — within the 5-minute skew buffer.
+    almost_expired = now + dt.timedelta(minutes=4)
+    path = write_env(tmp_path, make_token(almost_expired))
+    with pytest.raises(CredentialError):
+        load_credentials(path, now=now)
+
+
+def test_token_with_exactly_5_minutes_remaining_is_rejected(tmp_path: pathlib.Path) -> None:
+    """The boundary: exactly 5 minutes left is still rejected (expires <= now + 5m)."""
+    now = dt.datetime(2026, 9, 23, 12, 0, 0, tzinfo=dt.timezone.utc)
+    five_minutes = now + dt.timedelta(minutes=5)
+    path = write_env(tmp_path, make_token(five_minutes))
+    with pytest.raises(CredentialError):
+        load_credentials(path, now=now)
+
+
+def test_token_with_over_5_minutes_remaining_is_accepted(tmp_path: pathlib.Path) -> None:
+    """Just over 5 minutes left is accepted."""
+    now = dt.datetime(2026, 9, 23, 12, 0, 0, tzinfo=dt.timezone.utc)
+    six_minutes = now + dt.timedelta(minutes=6)
+    path = write_env(tmp_path, make_token(six_minutes))
+    creds = load_credentials(path, now=now)
+    assert creds.token
+
+
+def test_http_server_is_rejected(tmp_path: pathlib.Path) -> None:
+    """A plain-http server would send the Bearer token in cleartext."""
+    now = dt.datetime(2026, 9, 23, tzinfo=dt.timezone.utc)
+    path = tmp_path / "datahubenv"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "gms": {
+                    "server": "http://pro-lemur-fda34e845.trials.acryl.io/gms",
+                    "token": make_token(now + dt.timedelta(days=1)),
+                }
+            }
+        )
+    )
+    with pytest.raises(CredentialError) as err:
+        load_credentials(path, now=now)
+    assert "https://" in str(err.value)
+
+
+def test_non_string_token_raises_credential_error(tmp_path: pathlib.Path) -> None:
+    """A YAML token: 12345 parses as an int, not a string; must not reach split()."""
+    now = dt.datetime(2026, 9, 23, tzinfo=dt.timezone.utc)
+    path = tmp_path / "datahubenv"
+    # Write raw YAML so the token is a bare integer (not quoted).
+    path.write_text(
+        "gms:\n"
+        "  server: https://pro-lemur-fda34e845.trials.acryl.io/gms\n"
+        "  token: 12345\n"
+    )
+    with pytest.raises(CredentialError) as err:
+        load_credentials(path, now=now)
+    assert "string" in str(err.value).lower()
+
+
 def test_missing_file_names_the_path(tmp_path: pathlib.Path) -> None:
     missing = tmp_path / "nope.yaml"
     with pytest.raises(CredentialError) as err:
