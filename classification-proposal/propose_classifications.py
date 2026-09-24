@@ -19,6 +19,12 @@ import sys
 from datahub_client import CredentialError, DataHubClient, DataHubError, load_credentials
 from proposals import ASSETS, generate_proposals
 
+# Hard limit on total proposals (column-level + asset-level) per invocation.
+# One fat-finger on --count (e.g. 120 instead of 12) would otherwise file
+# O(100) live proposals into a real customer's Task Center. Pass --force to
+# override when a large batch is genuinely intended.
+MAX_PROPOSALS = 50
+
 
 def _print_urns(created: list[tuple[str, str]]) -> None:
     """Print the actionRequest URN block, or nothing if the list is empty."""
@@ -41,6 +47,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="column-level proposals (default 12). Asset-level are extra: one per dataset.",
     )
     parser.add_argument("--seed", type=int, help="make a run reproducible")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            f"bypass the {MAX_PROPOSALS}-proposal safety cap. "
+            "This tool writes live; use with care."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -67,6 +81,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.count < 0:
         print("--count must be zero or greater", file=sys.stderr)
+        return 1
+
+    # Cap check: total = column-level + one asset-level per dataset touched.
+    # This sits after asset resolution (needs len(chosen)) and the --count guard
+    # (count is now trusted to be >= 0), but BEFORE load_credentials so a
+    # blocked run never touches credentials or the network.
+    asset_level_count = len(chosen)
+    planned_total = args.count + asset_level_count
+    if planned_total > MAX_PROPOSALS and not args.force:
+        print(
+            f"planned {planned_total} proposals "
+            f"({args.count} column-level + {asset_level_count} asset-level) "
+            f"exceeds the safety cap of {MAX_PROPOSALS}. "
+            "Re-run with --force to override.",
+            file=sys.stderr,
+        )
         return 1
 
     try:

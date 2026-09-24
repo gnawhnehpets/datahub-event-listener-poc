@@ -11,6 +11,11 @@ asset-level proposal per dataset touched, and re-running adds more rather than
 replacing. The planned total prints before submission, and every created
 `actionRequest` URN prints after so a batch can be rejected in bulk.
 
+A **safety cap of 50 total proposals** (column-level + asset-level) blocks runs
+that exceed it. This guards against fat-finger counts (e.g. `--count 120`
+instead of `12`). Add `--force` to override when a large batch is genuinely
+intended.
+
 ## Credentials
 
 Reads `~/.datahubenv_prolemur` (override with `DATAHUB_ENV_FILE`):
@@ -38,6 +43,7 @@ python classification-proposal/propose_classifications.py --asset all --count 20
 | `--asset` | `banking_accounts`, `banking_loans`, `banking_customers`, `banking_transactions`, `pattern_analysis`, or `all`. Omit to list and exit. |
 | `--count` | Column-level proposals (default 12). Asset-level are **extra**: one per dataset. |
 | `--seed` | Reproducible run. |
+| `--force` | Bypass the 50-proposal safety cap. This tool writes live; use with care. |
 
 So `--asset all --count 12` files 17 proposals: 12 column-level + 5 asset-level.
 
