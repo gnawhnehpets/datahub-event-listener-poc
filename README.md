@@ -248,6 +248,12 @@ and Resend — so a test cannot pass while the YAML says something else.
 Each cell is mutation-checked: flipping any outcome to `log`, or changing who is
 notified, fails the suite.
 
+## Classification proposal tool
+
+`classification-proposal/` contains a standalone script that files randomised
+classification tag proposals against the POC Databricks datasets via the
+DataHub GraphQL API. See `classification-proposal/README.md` for usage.
+
 ## Layout
 
 ```

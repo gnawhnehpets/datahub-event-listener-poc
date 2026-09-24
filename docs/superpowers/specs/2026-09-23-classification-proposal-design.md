@@ -84,9 +84,9 @@ classification-proposal/
 ```
 
 `proposals.py` is pure: given assets, columns, tags and a seeded RNG it returns
-a list of proposal dicts. That is the part with logic worth testing, and it is
-testable without a DataHub instance. `datahub_client.py` owns every network
-call. The entrypoint wires them together and formats output.
+a list of frozen `Proposal` dataclasses. That is the part with logic worth
+testing, and it is testable without a DataHub instance. `datahub_client.py`
+owns every network call. The entrypoint wires them together and formats output.
 
 **Flow:** load and validate credentials → resolve the chosen asset's columns
 live via GraphQL → generate proposals → submit each via `proposeTags` → print
