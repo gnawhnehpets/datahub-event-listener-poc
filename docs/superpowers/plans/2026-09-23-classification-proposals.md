@@ -220,6 +220,7 @@ MSG
 Append to `classification-proposal/tests/test_proposals.py`:
 
 ```python
+import dataclasses
 import random
 
 from proposals import ASSETS, TAG_POOL, Proposal, generate_proposals
@@ -321,7 +322,7 @@ def test_duplicate_pairs_are_permitted() -> None:
 
 def test_proposal_is_immutable() -> None:
     out = generate_proposals(TWO_ASSETS, count=1, rng=random.Random(8))
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         out[0].score = 0.1  # type: ignore[misc]
 ```
 
@@ -595,6 +596,8 @@ import os
 import pathlib
 from dataclasses import dataclass
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_ENV_FILE = "~/.datahubenv_prolemur"
@@ -635,8 +638,6 @@ def load_credentials(
     now: dt.datetime | None = None,
 ) -> Credentials:
     """Load and validate credentials, or raise CredentialError."""
-    import yaml
-
     raw = path or os.environ.get("DATAHUB_ENV_FILE") or DEFAULT_ENV_FILE
     resolved = pathlib.Path(raw).expanduser()
     if not resolved.is_file():
