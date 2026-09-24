@@ -19,7 +19,10 @@ import os
 import pathlib
 from dataclasses import dataclass
 
+import requests
 import yaml
+
+from proposals import Proposal
 
 logger = logging.getLogger(__name__)
 
@@ -85,3 +88,86 @@ def load_credentials(
 
     logger.info("credentials valid until %s", f"{expires:%Y-%m-%d %H:%M:%S UTC}")
     return Credentials(graphql_url=graphql_url_from_server(server), token=token)
+
+
+_COLUMNS_QUERY = """
+query datasetColumns($urn: String!) {
+  dataset(urn: $urn) {
+    schemaMetadata { fields { fieldPath } }
+  }
+}
+"""
+
+_PROPOSE_TAGS = """
+mutation proposeTags($input: ProposeTagsInput!) {
+  proposeTags(input: $input)
+}
+"""
+
+
+class DataHubError(Exception):
+    """A GraphQL call failed or returned errors."""
+
+
+class DataHubClient:
+    """Only the two operations this script needs."""
+
+    def __init__(self, creds: Credentials) -> None:
+        self._url = creds.graphql_url
+        self._session = requests.Session()
+        self._session.headers.update(
+            {
+                "Authorization": f"Bearer {creds.token}",
+                "Content-Type": "application/json",
+            }
+        )
+
+    def _execute(self, query: str, variables: dict) -> dict:
+        try:
+            response = self._session.post(
+                self._url, json={"query": query, "variables": variables}, timeout=30
+            )
+        except requests.RequestException as exc:
+            raise DataHubError(f"request failed: {exc}") from exc
+
+        if response.status_code == 401:
+            raise DataHubError("401 unauthorized -- the token was rejected")
+        if response.status_code >= 400:
+            raise DataHubError(f"HTTP {response.status_code}: {response.text[:300]}")
+
+        body = response.json()
+        if body.get("errors"):
+            raise DataHubError("; ".join(e.get("message", str(e)) for e in body["errors"]))
+        return body["data"]
+
+    def fetch_columns(self, dataset_urn: str) -> list[str]:
+        """Live fieldPaths, so the script does not drift as the POC data changes."""
+        data = self._execute(_COLUMNS_QUERY, {"urn": dataset_urn})
+        dataset = data.get("dataset")
+        if not dataset or not dataset.get("schemaMetadata"):
+            raise DataHubError(f"no schema found for {dataset_urn}")
+        return [f["fieldPath"] for f in dataset["schemaMetadata"]["fields"]]
+
+    def propose_tag(self, proposal: Proposal) -> str:
+        """File one proposal. Returns the created actionRequest URN.
+
+        origin INFERRED requires inferenceMetadata, which is where the native
+        confidence bucket goes. The precise score travels in `description`,
+        documented by the schema as "also called proposalNote".
+        """
+        payload: dict = {
+            "resourceUrn": proposal.resource_urn,
+            "tagUrns": [proposal.tag_urn],
+            "description": proposal.note,
+            "origin": "INFERRED",
+            "inferenceMetadata": {
+                "version": 1,
+                "confidenceLevel": proposal.confidence_level,
+            },
+        }
+        # Omitting both sub-resource fields is what makes this asset-level.
+        if proposal.sub_resource is not None:
+            payload["subResourceType"] = "DATASET_FIELD"
+            payload["subResource"] = proposal.sub_resource
+
+        return self._execute(_PROPOSE_TAGS, {"input": payload})["proposeTags"]
