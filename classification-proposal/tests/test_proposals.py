@@ -143,14 +143,21 @@ def test_confidence_fields_are_internally_consistent() -> None:
 def test_duplicate_pairs_are_permitted() -> None:
     """Multiple proposals on one attribute is a requirement, not a bug.
 
-    One column and one tag leaves generation no way to vary the pair, so every
-    result must be the same (column, tag) -- proving nothing dedupes them.
+    seed=7 with count=10 yields exactly 4 unique (sub_resource, tag_urn) pairs
+    across 10 proposals, verified empirically.  A deduper on
+    (resource_urn, sub_resource, tag_urn) triples would collapse the output to
+    those 4 unique proposals -- so asserting both the total count (10) and that
+    unique pairs are fewer than total (< 10) provides a bi-directional guard:
+    the test fails if proposals are dropped AND fails if duplicate pairs vanish.
     """
     single = {"banking_accounts": ["account_id"]}
-    out = generate_proposals(single, count=5, rng=random.Random(7))
+    out = generate_proposals(single, count=10, rng=random.Random(7))
     column_level = [p for p in out if p.sub_resource is not None]
-    assert len(column_level) == 5
+    assert len(column_level) == 10
     assert len({(p.resource_urn, p.sub_resource) for p in column_level}) == 1
+    unique_col_tag_pairs = {(p.sub_resource, p.tag_urn) for p in column_level}
+    assert len(unique_col_tag_pairs) == 4  # seed=7 provably hits only 4 of 5 tags
+    assert len(unique_col_tag_pairs) < len(column_level)  # repeats exist; a deduper would fail this
 
 
 def test_proposal_is_immutable() -> None:
