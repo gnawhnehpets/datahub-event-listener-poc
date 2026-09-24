@@ -43,14 +43,24 @@ So `--asset all --count 12` files 17 proposals: 12 column-level + 5 asset-level.
 
 ## Confidence
 
-Each proposal draws a score in `[0.50, 0.99]`, carried two ways:
+Each proposal draws a score in `[0.50, 0.99]`. The score is carried in two
+places in the payload sent to the server:
 
-- **Note** (`description`, DataHub's proposalNote): `confidence: 87.342% (High)`
+- **Note** (`description`, DataHub's proposalNote): `confidence: 87.342% (High)` —
+  this lands correctly and is the only place the confidence survives on-disk.
 - **Native** (`inferenceMetadata.confidenceLevel`): `0` Low `<0.70`, `1` Medium
-  `<0.85`, `2` High otherwise
+  `<0.85`, `2` High otherwise — **silently dropped by the server on DataHub
+  v2.1.3**. The client sends `origin: "INFERRED"` and a valid `inferenceMetadata`
+  object; the server accepts the mutation without error but stores
+  `origin: MANUAL` and omits `inferenceMetadata` entirely. Live verification
+  against the pro-lemur tenant found zero action requests carrying `INFERRED`
+  origin or `inferenceMetadata` across all 174 stored requests. This is a
+  server-side limitation, not a client bug — the payload is a faithful encoding
+  of what the GraphQL schema declares, and the code should start working if a
+  future server version honours the field.
 
-Both derive from one draw, so they cannot disagree. The native field only has
-three buckets, which is why the precise score also goes in the note.
+Both values derive from one draw, so they cannot disagree. The native field
+only has three buckets, which is why the precise score also goes in the note.
 
 ## Tests
 

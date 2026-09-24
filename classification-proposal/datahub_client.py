@@ -168,6 +168,13 @@ class DataHubClient:
             "tagUrns": [proposal.tag_urn],
             "description": proposal.note,
             "origin": "INFERRED",
+            # inferenceMetadata is the correct place for the native confidence
+            # bucket per the GraphQL schema. However, DataHub v2.1.3 silently
+            # drops it: the server accepts the mutation without error but stores
+            # origin=MANUAL and omits inferenceMetadata entirely. The code is
+            # correct and should start working on a version that honours the
+            # field. The confidence score still lands correctly in `description`
+            # (proposal.note), which is the only surviving path for now.
             "inferenceMetadata": {
                 "version": 1,
                 "confidenceLevel": proposal.confidence_level,

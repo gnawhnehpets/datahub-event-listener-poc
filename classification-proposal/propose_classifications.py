@@ -22,6 +22,14 @@ from proposals import ASSETS, generate_proposals
 logger = logging.getLogger("propose")
 
 
+def _print_urns(created: list[tuple[str, str]]) -> None:
+    """Print the actionRequest URN block, or nothing if the list is empty."""
+    if created:
+        print("\nactionRequest URNs (use these to reject the batch):")
+        for _, urn in created:
+            print(f"  {urn}")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -94,26 +102,40 @@ def main(argv: list[str] | None = None) -> int:
 
     created: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
-    for proposal in proposals:
-        target = proposal.sub_resource or "<asset-level>"
-        label = f"{proposal.resource_urn.split(',')[1]}.{target} -> {proposal.tag_name}"
-        try:
-            # One failure must not cost the rest of the batch: a partial run
-            # whose successes went unrecorded is the worst outcome here.
-            urn = client.propose_tag(proposal)
-        except DataHubError as exc:
-            failed.append((label, str(exc)))
-            print(f"  FAIL  {label}  {proposal.note}  -- {exc}")
-        else:
-            created.append((label, urn))
-            print(f"  OK    {label}  {proposal.note}")
+    try:
+        for proposal in proposals:
+            target = proposal.sub_resource or "<asset-level>"
+            label = f"{proposal.resource_urn.split(',')[1]}.{target} -> {proposal.tag_name}"
+            try:
+                # One failure must not cost the rest of the batch: a partial run
+                # whose successes went unrecorded is the worst outcome here.
+                urn = client.propose_tag(proposal)
+                # Record the URN immediately after it is returned, before any
+                # other work (including KeyboardInterrupt) can execute. If we
+                # did anything between the return value and the append, an
+                # interrupt could leave a proposal on the server with no URN
+                # printed -- an orphan nobody can find to clean up.
+                created.append((label, urn))
+            except DataHubError as exc:
+                failed.append((label, str(exc)))
+                print(f"  FAIL  {label}  {proposal.note}  -- {exc}")
+            else:
+                print(f"  OK    {label}  {proposal.note}")
+    except KeyboardInterrupt:
+        # Print whatever we collected before the interrupt so the caller has
+        # the URN list needed to reject a partial batch. A raw traceback is not
+        # useful here; the URNs are.
+        print(f"\n[interrupted] {len(created)} created, {len(failed)} failed before Ctrl-C")
+        _print_urns(created)
+        return 1
 
     print(f"\n{len(created)} created, {len(failed)} failed")
-    if created:
-        print("\nactionRequest URNs (use these to reject the batch):")
-        for _, urn in created:
-            print(f"  {urn}")
-    return 1 if failed and not created else 0
+    _print_urns(created)
+    # Exit 1 whenever any proposal failed, even if others succeeded.
+    # "Per-proposal failures are never fatal" means do not abort mid-batch;
+    # it does not mean hide failures from the caller. A script checking
+    # `... && echo done` must not get a false all-clear on a partial run.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
