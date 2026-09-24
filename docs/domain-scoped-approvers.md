@@ -194,9 +194,15 @@ single domain-specific approver rather than a fixed trio, and the hardcoded
 - **A dataset with no domain, or a domain with no Data Steward, resolves to no
   approver at all.** Seven domain-assigned datasets and 470 domainless datasets
   are currently in that position. Avoid demonstrating on those.
-- **Adding a second steward widens the audience for that domain.** After the demo
-  above, Finance Division has two stewards, so repeating Step 1 will no longer
-  exclude you until one is removed.
+- **"Request Access" disappears on an asset where you already have an open
+  request.** DataHub will not let the same person raise a second pending request
+  against the same asset. Mid-demo this looks like a permissions or configuration
+  fault and it is neither. Pick an asset with no open request from you, and check
+  first with `show_request_assignees.py`.
+- **Adding yourself as a second steward widens the audience for that domain.**
+  Step 2 of the walkthrough does exactly this, so after a run the domain has two
+  stewards and Step 1 will no longer exclude you. Remove yourself again before
+  repeating the demo.
 - **The corp group `urn:li:corpGroup:6bb71640-…` ("Data Stewards") does not exist
   as an entity** — `entityExists` returns `false`. It retains membership edges, so
   it appears in some views, but it cannot be used as an owner and DataHub rejects
