@@ -96,3 +96,54 @@ def test_unparseable_token_is_rejected(tmp_path: pathlib.Path) -> None:
     path = write_env(tmp_path, "not-a-jwt")
     with pytest.raises(CredentialError):
         load_credentials(path)
+
+
+def test_token_with_string_exp_claim_raises_credential_error(tmp_path: pathlib.Path) -> None:
+    """A malformed token with exp as a string (not numeric) raises CredentialError."""
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("=")
+    body = json.dumps({"actorId": "stephen.hwang@datahub.com", "exp": "2026-09-02"})
+    payload = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
+    token = f"{header}.{payload}.signature"
+    path = write_env(tmp_path, token)
+    with pytest.raises(CredentialError):
+        load_credentials(path)
+
+
+@pytest.mark.parametrize(
+    "body_dict",
+    [
+        {"actorId": "stephen.hwang@datahub.com"},  # exp missing
+        {"actorId": "stephen.hwang@datahub.com", "exp": [2026, 9, 2]},  # exp as list
+    ],
+)
+def test_token_with_missing_or_malformed_exp(tmp_path: pathlib.Path, body_dict: dict) -> None:
+    """Tokens with missing or non-numeric exp raise CredentialError."""
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("=")
+    body = json.dumps(body_dict)
+    payload = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
+    token = f"{header}.{payload}.signature"
+    path = write_env(tmp_path, token)
+    with pytest.raises(CredentialError):
+        load_credentials(path)
+
+
+def test_token_payload_valid_base64_but_invalid_json(tmp_path: pathlib.Path) -> None:
+    """Payload that decodes to non-JSON raises CredentialError."""
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("=")
+    # Valid base64, but not valid JSON
+    payload = base64.urlsafe_b64encode(b"this is not json").decode().rstrip("=")
+    token = f"{header}.{payload}.signature"
+    path = write_env(tmp_path, token)
+    with pytest.raises(CredentialError):
+        load_credentials(path)
+
+
+def test_token_payload_json_but_not_object(tmp_path: pathlib.Path) -> None:
+    """Payload that is JSON but not an object (e.g., array or string) raises CredentialError."""
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("=")
+    # Valid JSON, but not a dict
+    payload = base64.urlsafe_b64encode(b'["not", "a", "dict"]').decode().rstrip("=")
+    token = f"{header}.{payload}.signature"
+    path = write_env(tmp_path, token)
+    with pytest.raises(CredentialError):
+        load_credentials(path)

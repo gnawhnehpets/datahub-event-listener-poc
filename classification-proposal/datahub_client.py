@@ -52,7 +52,7 @@ def token_expiry(token: str) -> dt.datetime:
         payload += "=" * (-len(payload) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload))
         return dt.datetime.fromtimestamp(claims["exp"], dt.timezone.utc)
-    except (IndexError, KeyError, ValueError, binascii.Error) as exc:
+    except (IndexError, KeyError, TypeError, ValueError, binascii.Error) as exc:
         raise CredentialError(f"could not read exp claim from token: {exc}") from exc
 
 
