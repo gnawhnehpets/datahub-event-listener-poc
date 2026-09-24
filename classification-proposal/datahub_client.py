@@ -135,9 +135,17 @@ class DataHubClient:
         if response.status_code >= 400:
             raise DataHubError(f"HTTP {response.status_code}: {response.text[:300]}")
 
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise DataHubError(
+                f"response is not valid JSON (HTTP 200): {response.text[:300]}"
+            ) from exc
+
         if body.get("errors"):
             raise DataHubError("; ".join(e.get("message", str(e)) for e in body["errors"]))
+        if "data" not in body:
+            raise DataHubError(f"malformed response: neither data nor errors present: {body}")
         return body["data"]
 
     def fetch_columns(self, dataset_urn: str) -> list[str]:
