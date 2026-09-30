@@ -141,6 +141,44 @@ query childDomains($filters: [FacetFilterInput!]) {
 }
 """
 
+_ROOT_DOMAINS_QUERY = """
+query rootDomains {
+  searchAcrossEntities(input: {types: [DOMAIN], query: "*", start: 0, count: 1000,
+                               orFilters: [{and: [{field: "hasParentDomain",
+                                                   condition: EQUAL,
+                                                   negated: false,
+                                                   values: ["false"]}]}]}) {
+    total
+    searchResults {
+      entity {
+        urn
+        ... on Domain {
+          properties { name }
+          parentDomains { domains { urn } }
+          structuredProperties {
+            properties {
+              structuredProperty { urn }
+              values { ... on StringValue { stringValue } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+_ACTION_WORKFLOWS_QUERY = """
+query listActionWorkflows {
+  listActionWorkflows(input: {start: 0, count: 1000}) {
+    workflows {
+      urn
+      name
+    }
+  }
+}
+"""
+
 _PRINCIPALS_QUERY = """
 query principals($urns: [String!]!) {
   entities(urns: $urns) {
@@ -374,4 +412,50 @@ class DataHubClient:
             {"filters": [{"field": "parentDomain", "values": [parent_urn], "condition": "EQUAL"}]},
         )["searchAcrossEntities"]
         return [hit["entity"] for hit in (result.get("searchResults") or []) if hit.get("entity")]
+
+    def get_root_domains(self) -> list[dict]:
+        """Every domain with no parent, i.e. the Level 1 tier.
+
+        ``hasParentDomain: "false"`` is the indexed predicate for this; verified
+        against the live instance, where it partitions the tree exactly (20 root,
+        26 non-root, 46 total). Reads through search, so it lags writes by
+        seconds -- a root created moments ago may not appear yet.
+
+        A short read is treated as a hard error rather than a silent truncation.
+        Past the query's count limit, a missing root domain would make
+        ``_resolve_root`` report a real root name as "not a root domain", sending
+        the operator to re-run the generator rather than pointing at the real
+        cause. The same logic applies here as in the generator's
+        ``IncompleteFetch``: a partial view inverts the answer rather than merely
+        degrading it, so a loud failure is safer than a quiet one.
+        """
+        result = self.execute(_ROOT_DOMAINS_QUERY, {})["searchAcrossEntities"]
+        hits = result.get("searchResults") or []
+        total = result.get("total") or 0
+        if total > len(hits):
+            raise DataHubError(
+                f"Root-domain query reports {total} domains but returned {len(hits)}. "
+                f"Raise the count limit in _ROOT_DOMAINS_QUERY (currently 1000) or "
+                f"page the query; _resolve_root cannot be trusted against a partial view."
+            )
+        return [hit["entity"] for hit in hits if hit.get("entity")]
+
+    def list_action_workflows(self) -> list[dict]:
+        """Every Action Workflow on the instance as ``{urn, name}``.
+
+        Two fields only: this exists so the router can bind config keys to live
+        URNs, not to reproduce a definition. ``fetch_action_workflows.py`` is the
+        tool for that, and it gets there by recursively introspecting the schema.
+
+        Reads workflow entities directly rather than through the domain search
+        index, so unlike ``get_child_domains`` this does not lag a recent write.
+
+        ``count: 1000`` matches the convention in ``_CHILD_DOMAINS_QUERY``. A
+        short read cannot invert the caller's decision the way a short *domain*
+        fetch can -- a missing name fails loudly instead of being read as a
+        deletion -- so this needs no ``IncompleteFetch`` equivalent.
+        """
+        result = self.execute(_ACTION_WORKFLOWS_QUERY, {}) or {}
+        listing = result.get("listActionWorkflows") or {}
+        return [w for w in (listing.get("workflows") or []) if w.get("urn")]
 
