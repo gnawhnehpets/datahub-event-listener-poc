@@ -1,0 +1,100 @@
+{
+  "input": {
+    "urn": "urn:li:actionWorkflow:column-classification-review",
+    "name": "Column Classification Review",
+    "category": "CUSTOM",
+    "customCategory": "CLASSIFICATION",
+    "description": "Review a classification tag proposed for a single column by an external classifier. Routes to the data steward of the dataset's domain.",
+    "trigger": {
+      "type": "FORM_SUBMITTED",
+      "form": {
+        "entrypoints": [
+          {
+            "type": "ENTITY_PROFILE",
+            "label": "Propose Column Classification",
+            "filter": null
+          }
+        ],
+        "entityTypes": [
+          "DATASET"
+        ],
+        "excludedDefaultFields": null,
+        "fields": [
+          {
+            "id": "target_column",
+            "name": "Column",
+            "description": "The schema field path this classification applies to, exactly as it appears in the dataset schema (e.g. balance, customer_id).",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": true,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "proposed_tag",
+            "name": "Proposed classification tag",
+            "description": "The tag the external classifier proposes for this column.",
+            "valueType": "URN",
+            "allowedEntityTypes": [
+              "TAG"
+            ],
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": true,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "confidence",
+            "name": "Classifier confidence",
+            "description": "Confidence reported by the external classifier, e.g. 87.342% (High). Recorded verbatim so the reviewer can weigh the suggestion.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": true,
+            "condition": null,
+            "valuesSource": null
+          },
+          {
+            "id": "classifier",
+            "name": "Classifier run",
+            "description": "Which external classifier and version produced this, so a wave of bad suggestions can be traced back and withdrawn.",
+            "valueType": "STRING",
+            "allowedEntityTypes": null,
+            "allowedValues": null,
+            "cardinality": "SINGLE",
+            "required": false,
+            "condition": null,
+            "valuesSource": null
+          }
+        ]
+      }
+    },
+    "steps": [
+      {
+        "id": "domain_data_steward_review",
+        "type": "APPROVAL",
+        "description": "Reviewed by the data steward(s) of the dataset's domain. No static actors: assignment is resolved from domain ownership at request time, so the routing follows the taxonomy without per-domain configuration.",
+        "condition": null,
+        "actors": {
+          "userUrns": [],
+          "groupUrns": [],
+          "roleUrns": [],
+          "dynamicAssignment": {
+            "type": "ENTITY_DOMAIN_OWNERS",
+            "ownershipTypeUrns": [
+              "urn:li:ownershipType:__system__data_steward"
+            ]
+          },
+          "dynamicSource": null
+        },
+        "quorum": {
+          "anyOf": true
+        }
+      }
+    ]
+  }
+}

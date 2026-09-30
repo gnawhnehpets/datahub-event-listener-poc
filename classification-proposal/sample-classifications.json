@@ -1,0 +1,31 @@
+[
+  {
+    "dataset": "urn:li:dataset:(urn:li:dataPlatform:databricks,workspace.default.accounts_banking,PROD)",
+    "column": "balance",
+    "tag": "urn:li:tag:Confidential",
+    "confidence": "91.204% (High)",
+    "classifier": "acme-classifier v1.4"
+  },
+  {
+    "dataset": "urn:li:dataset:(urn:li:dataPlatform:databricks,workspace.default.accounts_banking,PROD)",
+    "column": "customer_id",
+    "tag": "urn:li:tag:PII",
+    "confidence": "87.342% (High)",
+    "classifier": "acme-classifier v1.4"
+  },
+  {
+    "dataset": "urn:li:dataset:(urn:li:dataPlatform:databricks,workspace.default.accounts_banking,PROD)",
+    "column": "risk_flag",
+    "tag": "urn:li:tag:Restricted",
+    "confidence": "72.918% (Medium)",
+    "classifier": "acme-classifier v1.4"
+  },
+  {
+    "dataset": "urn:li:dataset:(urn:li:dataPlatform:databricks,testworkspaceforpoc.default.banking_accounts,PROD)",
+    "column": "account_id",
+    "tag": "urn:li:tag:PII",
+    "confidence": "68.441% (Low)",
+    "classifier": "acme-classifier v1.4",
+    "_note": "Deliberately unroutable: this dataset has no domain, so no steward resolves. The preflight must BLOCK it rather than file a request nobody would see."
+  }
+]

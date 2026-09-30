@@ -152,7 +152,7 @@ def _build_payload(proposal: Proposal) -> dict:
 
 
 class DataHubClient:
-    """Only the two operations this script needs."""
+    """Thin GraphQL transport plus the handful of operations these scripts need."""
 
     def __init__(self, creds: Credentials) -> None:
         self._url = creds.graphql_url
@@ -191,6 +191,16 @@ class DataHubClient:
                 f"malformed response: neither data nor errors present: {str(body)[:300]}"
             )
         return body["data"]
+
+    def execute(self, query: str, variables: dict) -> dict:
+        """Run an arbitrary query or mutation, returning the `data` object.
+
+        Public so callers with their own operations -- propose_via_workflow.py
+        raises Action Workflow requests -- reuse this transport and its error
+        contract rather than opening a second session with its own auth and
+        its own idea of what a failure looks like.
+        """
+        return self._execute(query, variables)
 
     def fetch_columns(self, dataset_urn: str) -> list[str]:
         """Live fieldPaths, so the script does not drift as the POC data changes."""
