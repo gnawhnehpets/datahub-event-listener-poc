@@ -76,15 +76,23 @@ mutation createActionWorkflowFormRequest($input: CreateActionWorkflowFormRequest
 # several seconds -- whereas the resource-scoped list returns it with assignees
 # populated. allActionRequests is required or the list is silently scoped to
 # the caller and the new request may be missing entirely.
+#
+# start/count are variables rather than literals because requests accumulate on
+# a resource and there is no dedupe. Once a dataset crosses one page our rows
+# fall off the end, and a request that routed correctly reads as ROUTING
+# DIFFERS -- a false alarm that looks exactly like the bug this tool exists to
+# detect.
 _REQUEST_ASSIGNEES = """
-query requestsForResource($resourceUrn: String!) {
+query requestsForResource($resourceUrn: String!, $start: Int!, $count: Int!) {
   listActionRequests(input: {
-    start: 0, count: 50, allActionRequests: true, resourceUrn: $resourceUrn
+    start: $start, count: $count, allActionRequests: true, resourceUrn: $resourceUrn
   }) {
     actionRequests { urn assignedUsers assignedGroups assignedRoles }
   }
 }
 """
+
+PAGE_SIZE = 50
 
 
 class RoutingError(Exception):
@@ -147,38 +155,80 @@ def build_request(item: dict) -> dict:
     }
 
 
-def verify_routing(
+def fetch_assignees(
+    client: DataHubClient, resource_urn: str
+) -> dict[str, tuple[list[str], list[str]]]:
+    """Map every request on a resource to its (assignees, roles).
+
+    Pages to exhaustion. One read covers every request filed against that
+    resource, which is what makes batch verification a single call rather than
+    one per request.
+    """
+    found: dict[str, tuple[list[str], list[str]]] = {}
+    start = 0
+    while True:
+        data = client.execute(
+            _REQUEST_ASSIGNEES,
+            {"resourceUrn": resource_urn, "start": start, "count": PAGE_SIZE},
+        )
+        rows = (data.get("listActionRequests") or {}).get("actionRequests") or []
+        for row in rows:
+            urn = row.get("urn")
+            if not urn:
+                continue
+            found[urn] = (
+                list(row.get("assignedUsers") or [])
+                + list(row.get("assignedGroups") or []),
+                list(row.get("assignedRoles") or []),
+            )
+        if len(rows) < PAGE_SIZE:
+            return found
+        start += PAGE_SIZE
+
+
+def verify_batch(
     client: DataHubClient,
-    request_urn: str,
-    resource_urn: str,
-    predicted: list[str],
+    created: list[tuple[str, str, str, list[str]]],
     attempts: int = 6,
     delay_seconds: float = 2.0,
-) -> tuple[bool, list[str], list[str]]:
-    """Compare who the server actually assigned against the prediction.
+) -> dict[str, tuple[list[str], list[str]]]:
+    """Resolve actual assignees for a whole batch in one poll loop.
 
     This is the point of the exercise. If ENTITY_DOMAIN_OWNERS resolves the
     same way for a scripted request as for a UI form submission, actual should
     equal predicted and no platform-wide roles should appear.
 
-    Assignment resolves asynchronously, so this polls. Reading immediately
-    returns an empty assignee list and looks exactly like a routing failure --
-    which cost one false alarm before the retry was added.
+    Assignment resolves asynchronously, so this still polls -- reading
+    immediately returns empty assignee lists and looks exactly like a routing
+    failure, which cost one false alarm before the retry existed. The change is
+    that one sleep now covers the entire batch instead of one sleep per
+    request. Filing 11 proposals used to spend minutes asleep for ~7s of actual
+    network.
+
+    Each `created` entry is (label, request_urn, resource_urn, predicted).
+    Requests that never gain an assignee come back as ([], []) so the caller
+    reports ROUTING DIFFERS rather than silently dropping them.
     """
+    resources = sorted({resource for _, _, resource, _ in created})
+    pending = {request for _, request, _, _ in created}
+    resolved: dict[str, tuple[list[str], list[str]]] = {}
+
     for attempt in range(attempts):
-        data = client.execute(_REQUEST_ASSIGNEES, {"resourceUrn": resource_urn})
-        rows = (data.get("listActionRequests") or {}).get("actionRequests") or []
-        req = next((r for r in rows if r.get("urn") == request_urn), None)
-        if req:
-            actual = list(req.get("assignedUsers") or []) + list(
-                req.get("assignedGroups") or []
-            )
-            roles = list(req.get("assignedRoles") or [])
-            if actual:
-                return set(actual) == set(predicted) and not roles, actual, roles
+        for resource in resources:
+            for urn, value in fetch_assignees(client, resource).items():
+                # An empty assignee list means assignment has not landed yet,
+                # so leave it pending rather than recording a false negative.
+                if urn in pending and value[0]:
+                    resolved[urn] = value
+        pending -= resolved.keys()
+        if not pending:
+            break
         if attempt < attempts - 1:
             time.sleep(delay_seconds)
-    return False, [], []
+
+    for urn in pending:
+        resolved[urn] = ([], [])
+    return resolved
 
 
 def short(urn: str) -> str:
@@ -215,14 +265,24 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nRouting preflight for {len(items)} classification(s):\n")
     routable: list[tuple[dict, str, list[str]]] = []
     blocked: list[tuple[dict, str]] = []
+    # Routing is a property of the dataset, not the column, so a batch of 11
+    # columns on one table asked the same question 11 times. Cache the verdict
+    # -- failures included, or a blocked dataset is re-queried per column.
+    seen: dict[str, tuple[str, list[str]] | Exception] = {}
     for item in items:
-        try:
-            domain, stewards = predict_stewards(client, item["dataset"])
-        except (RoutingError, DataHubError) as exc:
-            blocked.append((item, str(exc)))
+        dataset = item["dataset"]
+        if dataset not in seen:
+            try:
+                seen[dataset] = predict_stewards(client, dataset)
+            except (RoutingError, DataHubError) as exc:
+                seen[dataset] = exc
+        cached = seen[dataset]
+        if isinstance(cached, Exception):
+            blocked.append((item, str(cached)))
             print(f"  BLOCKED  {item['column']:20} -> {item['tag']}")
-            print(f"           {exc}")
+            print(f"           {cached}")
         else:
+            domain, stewards = cached
             routable.append((item, domain, stewards))
             print(f"  OK       {item['column']:20} -> {item['tag']}")
             print(f"           domain={domain!r} steward(s)={[short(s) for s in stewards]}")
@@ -239,6 +299,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\nFiling {len(routable)} request(s):\n")
     created: list[tuple[str, str]] = []
+    # Parallel to `created`, carrying what verification needs: the resource to
+    # look the request up under, and who we predicted would be assigned.
+    pending: list[tuple[str, str, str, list[str]]] = []
     failed: list[tuple[str, str]] = []
     try:
         for item, domain, stewards in routable:
@@ -250,22 +313,28 @@ def main(argv: list[str] | None = None) -> int:
                 if not urn:
                     raise DataHubError("mutation returned no actionRequest URN")
                 created.append((label, urn))
+                pending.append((label, urn, item["dataset"], stewards))
             except DataHubError as exc:
                 failed.append((label, str(exc)))
                 print(f"  FAIL  {label}  -- {exc}")
                 continue
 
-            matches, actual, roles = verify_routing(
-                client, urn, item["dataset"], stewards
-            )
-            verdict = "ROUTED AS PREDICTED" if matches else "ROUTING DIFFERS"
-            print(f"  OK    {label}")
-            print(f"        {urn}")
-            print(f"        predicted: {[short(s) for s in stewards]}")
-            print(f"        actual   : {[short(a) for a in actual]}")
-            if roles:
-                print(f"        roles    : {roles}  <-- platform-wide, not steward-scoped")
-            print(f"        {verdict}")
+        # Verify once, after everything is filed. Assignment is asynchronous
+        # either way, so waiting per request bought nothing -- the whole batch
+        # settles during a single wait.
+        if pending:
+            resolved = verify_batch(client, pending)
+            for label, urn, _resource, stewards in pending:
+                actual, roles = resolved.get(urn, ([], []))
+                matches = set(actual) == set(stewards) and not roles
+                verdict = "ROUTED AS PREDICTED" if matches else "ROUTING DIFFERS"
+                print(f"  OK    {label}")
+                print(f"        {urn}")
+                print(f"        predicted: {[short(s) for s in stewards]}")
+                print(f"        actual   : {[short(a) for a in actual]}")
+                if roles:
+                    print(f"        roles    : {roles}  <-- platform-wide, not steward-scoped")
+                print(f"        {verdict}")
     finally:
         # The URNs are the only handle for withdrawing a batch, so print them
         # even if the loop dies partway.

@@ -278,8 +278,9 @@ resolved on its own within minutes both times; if not, check GMS pods in
 **Assignees come back empty right after filing.** Routing resolves
 asynchronously. Reading immediately returns `[]`, which is indistinguishable
 from a routing failure — it produced a false `ROUTING DIFFERS` on the first
-run here. `verify_routing` polls for up to 12 seconds. If you query by hand,
-retry before concluding anything.
+run here. `verify_batch` polls for up to 12 seconds, once for the whole batch
+rather than once per request. If you query by hand, retry before concluding
+anything.
 
 **`actionRequest(urn:)` returns `null` for a request you just created.** Same
 lag, different symptom. Read back through `listActionRequests` with
